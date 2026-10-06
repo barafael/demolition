@@ -1,0 +1,69 @@
+[package]
+name = "demolition-pong"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Only the Bevy features this game uses (sprites, meshes, gizmos, states); every extra one costs
+# megabytes in the wasm build. UI text comes from egui, not bevy_text.
+bevy = { version = "0.19", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_state",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "webgl2",
+    "bevy_window",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_camera",
+    "bevy_color",
+    "bevy_image",
+    "bevy_mesh",
+    "bevy_shader",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+] }
+avian2d = { version = "0.7", default-features = false, features = ["2d", "f32", "parry-f32", "xpbd_joints"] }
+bevy_egui = { version = "0.42", default-features = false, features = ["default_fonts", "manage_clipboard", "render"] }
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+# Serde for the math and color types stored in levels, without Bevy-wide `serialize`.
+# Versions must match the ones Bevy uses so these are the same crates.
+glam = { version = "0.32", features = ["serde"] }
+bevy_color = { version = "0.19", features = ["serialize"] }
+
+# Rayon-parallel collision detection; the browser build is single-threaded.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+avian2d = { version = "0.7", default-features = false, features = ["parallel"] }
+
+# Levels and highscores go to localStorage in the browser; launch options come from the URL.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Location", "Storage", "Window"] }
+
+# Physics is unbearably slow in debug without optimizing dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# `trunk build --cargo-profile wasm-release`: small download, still fast.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+
+# Bevy systems routinely take many parameters and complex query types.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"

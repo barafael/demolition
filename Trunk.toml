@@ -1,0 +1,5 @@
+# Web build: `trunk serve` for development, `trunk build --release --cargo-profile wasm-release`
+# for a release bundle in `dist/` (static files, host anywhere).
+[build]
+target = "index.html"
+dist = "dist"

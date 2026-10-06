@@ -1,0 +1,453 @@
+//! Headless tuning harness.
+//!
+//! - `--probe`: (1) every Lab structure built from each material settles under gravity; ideally
+//!   nothing breaks. (2) Every ammo type is fired at every structure. (3) Pong runs unattended.
+//! - `--diag [substeps]`: peak strain from gravity alone, with yielding and breaking disabled.
+//! - `--pong`: just the unattended Pong run.
+//! - `--bench`: wall-clock cost of a physics step.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use avian2d::prelude::*;
+use bevy::input::InputPlugin;
+use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
+use bevy::time::TimeUpdateStrategy;
+
+use crate::SimPlugin;
+use crate::fracture::Stats;
+use crate::gun::{Ammo, Gun, aim_at, fire};
+use crate::lattice::{Bond, Cell, Group, WorldAnchor};
+use crate::level::{self, Body, Level};
+use crate::materials::{MaterialKind, Materials};
+use crate::play::{ElementRoot, Mode, Score};
+
+const HZ: f64 = 64.0;
+
+fn make_app(level: Level) -> App {
+    let mut app = App::new();
+    app.add_plugins((
+        MinimalPlugins,
+        TransformPlugin,
+        StatesPlugin,
+        InputPlugin,
+        SimPlugin,
+    ))
+    .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+        1.0 / HZ,
+    )))
+    .insert_resource(level);
+    app.finish();
+    app.cleanup();
+    app.world_mut()
+        .resource_mut::<NextState<Mode>>()
+        .set(Mode::Play);
+    app.update();
+    app
+}
+
+fn step(app: &mut App, seconds: f32) {
+    for _ in 0..(seconds as f64 * HZ) as usize {
+        app.update();
+    }
+}
+
+/// The Lab preset with every lattice made of `material`.
+fn lab(material: MaterialKind) -> Level {
+    let mut level = level::preset_lab();
+    for element in &mut level.elements {
+        if let Body::Lattice { material: m, .. } = &mut element.body {
+            *m = material;
+        }
+    }
+    level
+}
+
+fn lattice_indices(level: &Level) -> Vec<usize> {
+    (0..level.elements.len())
+        .filter(|&i| matches!(level.elements[i].body, Body::Lattice { .. }))
+        .collect()
+}
+
+/// Element index of every live element root.
+fn root_indices(world: &mut World) -> HashMap<Entity, usize> {
+    world
+        .query::<(Entity, &ElementRoot)>()
+        .iter(world)
+        .map(|(e, r)| (e, r.index))
+        .collect()
+}
+
+/// Intact (bonds, pins) per element index.
+fn count_bonds(world: &mut World) -> HashMap<usize, (usize, usize)> {
+    let roots = root_indices(world);
+    let mut counts: HashMap<usize, (usize, usize)> = HashMap::new();
+    for (bond, group) in world.query::<(&Bond, &Group)>().iter(world) {
+        if let Some(&i) = roots.get(&group.0) {
+            let c = counts.entry(i).or_default();
+            if bond.material.is_some() {
+                c.0 += 1;
+            } else {
+                c.1 += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn cell_positions(world: &mut World) -> HashMap<Entity, Vec2> {
+    world
+        .query_filtered::<(Entity, &Position), With<Cell>>()
+        .iter(world)
+        .map(|(e, p)| (e, p.0))
+        .collect()
+}
+
+fn max_displacement(world: &mut World, start: &HashMap<Entity, Vec2>) -> HashMap<usize, f32> {
+    let roots = root_indices(world);
+    let mut out: HashMap<usize, f32> = HashMap::new();
+    for (e, p, group) in world.query::<(Entity, &Position, &Group)>().iter(world) {
+        let (Some(&i), Some(s)) = (roots.get(&group.0), start.get(&e)) else {
+            continue;
+        };
+        let d = out.entry(i).or_default();
+        *d = d.max(p.0.distance(*s));
+    }
+    out
+}
+
+/// Total plastic damage and peak cell speed of one element.
+fn plastic_and_speed(world: &mut World, index: usize) -> (f32, f32) {
+    let roots = root_indices(world);
+    let mut plastic = 0.0f32;
+    for (bond, group) in world.query::<(&Bond, &Group)>().iter(world) {
+        if roots.get(&group.0) == Some(&index) {
+            plastic += bond.damage;
+        }
+    }
+    let mut speed = 0.0f32;
+    for (v, group) in world
+        .query_filtered::<(&LinearVelocity, &Group), With<Cell>>()
+        .iter(world)
+    {
+        if roots.get(&group.0) == Some(&index) {
+            speed = speed.max(v.length());
+        }
+    }
+    (plastic, speed)
+}
+
+fn lost(
+    before: &HashMap<usize, (usize, usize)>,
+    after: &HashMap<usize, (usize, usize)>,
+    i: usize,
+) -> (usize, usize) {
+    let b = before.get(&i).copied().unwrap_or_default();
+    let a = after.get(&i).copied().unwrap_or_default();
+    (b.0.saturating_sub(a.0), b.1.saturating_sub(a.1))
+}
+
+/// Where the probe shoots a structure from: above for long flat ones, from the left otherwise.
+fn test_shot(level: &Level, index: usize) -> (Vec2, Vec2) {
+    let element = &level.elements[index];
+    let size = element.size();
+    let target = element.pos;
+    if size.x > size.y * 3.0 {
+        (target + Vec2::new(0.0, 280.0), target)
+    } else {
+        (target + Vec2::new(-320.0, 0.0), target)
+    }
+}
+
+pub fn run() {
+    let template = level::preset_lab();
+    let lattices = lattice_indices(&template);
+    let name = |i: usize| template.elements[i].name.clone();
+
+    println!("== Settle under gravity, 4 s: broken / pins lost / sag ==");
+    println!(
+        "{:<9}{}",
+        "",
+        lattices
+            .iter()
+            .map(|&i| format!("{:>18}", name(i)))
+            .collect::<String>()
+    );
+    for material in MaterialKind::ALL {
+        let mut app = make_app(lab(material));
+        step(&mut app, 2.0 / HZ as f32);
+        let before = count_bonds(app.world_mut());
+        let start = cell_positions(app.world_mut());
+        step(&mut app, 4.0);
+        let after = count_bonds(app.world_mut());
+        let sag = max_displacement(app.world_mut(), &start);
+        let row: String = lattices
+            .iter()
+            .map(|&i| {
+                let (b, p) = lost(&before, &after, i);
+                format!(
+                    "{:>18}",
+                    format!("{b}/{p}/{:.1}px", sag.get(&i).unwrap_or(&0.0))
+                )
+            })
+            .collect();
+        println!(
+            "{:<9}{row}   plastic {:.2}",
+            material.name(),
+            app.world().resource::<Stats>().plastic
+        );
+    }
+
+    println!();
+    println!("== Shots, 2 s: broken bonds (pins lost) plastic-damage peak-cell-speed ==");
+    println!(
+        "{:<13}{}",
+        "",
+        lattices
+            .iter()
+            .map(|&i| format!("{:>24}", name(i)))
+            .collect::<String>()
+    );
+    for material in MaterialKind::ALL {
+        println!("-- {}", material.name());
+        for ammo in Ammo::ALL {
+            let mut row = String::new();
+            for &index in &lattices {
+                // Only this structure (plus all walls), so shots can't interfere.
+                let mut level = lab(material);
+                let (from, to) = test_shot(&level, index);
+                let keep: Vec<bool> = (0..level.elements.len())
+                    .map(|i| i == index || matches!(level.elements[i].body, Body::Wall { .. }))
+                    .collect();
+                let local = keep[..index].iter().filter(|&&k| k).count();
+                let mut keep_iter = keep.iter();
+                level.elements.retain(|_| *keep_iter.next().unwrap());
+
+                let mut app = make_app(level);
+                step(&mut app, 0.5);
+                let before = count_bonds(app.world_mut());
+                let world = app.world_mut();
+                let materials = world.resource::<Materials>().clone();
+                let anchor = world.resource::<WorldAnchor>().0;
+                let g = -world.resource::<Gravity>().0.y;
+                let gun = Gun {
+                    pos: from,
+                    dir: aim_at(from, to, ammo.default_speed(), g),
+                    ammo,
+                    speed: ammo.default_speed(),
+                    ..default()
+                };
+                fire(&mut world.commands(), &materials, anchor, &gun);
+                world.flush();
+                let mut peak = (0.0f32, 0.0f32);
+                for _ in 0..(2.0 * HZ) as usize {
+                    app.update();
+                    let (plastic, speed) = plastic_and_speed(app.world_mut(), local);
+                    peak = (plastic, peak.1.max(speed));
+                }
+                let after = count_bonds(app.world_mut());
+                let (b, p) = lost(&before, &after, local);
+                row += &format!("{:>24}", format!("{b} ({p}) {:.1} {:.0}", peak.0, peak.1));
+            }
+            println!("{:<13}{row}", ammo.name());
+        }
+    }
+
+    println!();
+    pong();
+}
+
+/// Runs the Pong preset with nobody at the controls and reports what happened.
+pub fn pong() {
+    println!("== Pong preset, unattended ==");
+    pong_run(level::preset_pong());
+    gun_credit();
+}
+
+/// Shots from the gun belong to P1, so destroying a last-hitter element must score for P1.
+fn gun_credit() {
+    let level = level::preset_lab();
+    let pillar = level.elements.iter().find(|e| e.name == "Pillar").unwrap();
+    let (target, points) = (pillar.pos, pillar.points);
+    let mut app = make_app(level);
+    step(&mut app, 0.5);
+    for _ in 0..4 {
+        let world = app.world_mut();
+        let materials = world.resource::<Materials>().clone();
+        let anchor = world.resource::<WorldAnchor>().0;
+        let from = target + Vec2::new(-320.0, 60.0);
+        let gun = Gun {
+            pos: from,
+            dir: aim_at(from, target + Vec2::Y * 60.0, 1400.0, 900.0),
+            ammo: Ammo::Cannonball,
+            speed: 1400.0,
+            ..default()
+        };
+        fire(&mut world.commands(), &materials, anchor, &gun);
+        world.flush();
+        step(&mut app, 1.0);
+    }
+    let score = app.world().resource::<Score>().points;
+    let world = app.world_mut();
+    let pillar = world
+        .query::<(&ElementRoot, &crate::play::HitTag, &Name)>()
+        .iter(world)
+        .find(|(_, _, name)| name.as_str() == "Pillar")
+        .map(|(root, tag, _)| (tag.last_hit, root.destroyed));
+    println!("== Gun credit: 4 cannonballs at the Lab pillar ({points} pts, last hitter) ==");
+    println!(
+        "   pillar (last hit by, destroyed): {pillar:?}, score P1 {} : {} P2",
+        score[0], score[1]
+    );
+}
+
+fn pong_run(level: Level) {
+    let mut app = make_app(level.clone());
+    let seconds = 60.0;
+    let mut balls_lost = 0;
+    let mut destroyed_seen = HashMap::new();
+    for _ in 0..(seconds * HZ) as usize {
+        app.update();
+        let world = app.world_mut();
+        for (entity, root) in world.query::<(Entity, &ElementRoot)>().iter(world) {
+            if root.destroyed
+                && destroyed_seen.insert(entity, root.index).is_none()
+                && level.elements[root.index].name == "Ball"
+            {
+                balls_lost += 1;
+            }
+        }
+    }
+    let mut names: Vec<String> = destroyed_seen
+        .values()
+        .map(|&i| level.elements[i].name.clone())
+        .filter(|n| n != "Ball")
+        .collect();
+    names.sort();
+    let score = app.world().resource::<Score>().points;
+    let stats = app.world().resource::<Stats>();
+    println!(
+        "   {seconds} s: score {}:{}, {} bonds broken, {balls_lost} balls lost, destroyed: {}",
+        score[0],
+        score[1],
+        stats.broken,
+        if names.is_empty() {
+            "none".into()
+        } else {
+            names.join(", ")
+        }
+    );
+}
+
+/// Peak geometric strain and bend angle per element, for bonds and pins separately.
+fn peak_strains(world: &mut World, out: &mut HashMap<usize, [(f32, f32); 2]>) {
+    let roots = root_indices(world);
+    let bodies: HashMap<Entity, (Vec2, Rotation)> = world
+        .query::<(Entity, &Position, &Rotation)>()
+        .iter(world)
+        .map(|(e, p, r)| (e, (p.0, *r)))
+        .collect();
+    for (joint, bond, group) in world.query::<(&FixedJoint, &Bond, &Group)>().iter(world) {
+        let Some(&i) = roots.get(&group.0) else {
+            continue;
+        };
+        let (Some(&(p1, r1)), Some(&(p2, r2))) =
+            (bodies.get(&joint.body1), bodies.get(&joint.body2))
+        else {
+            continue;
+        };
+        let (JointAnchor::Local(a1), JointAnchor::Local(a2)) =
+            (joint.frame1.anchor, joint.frame2.anchor)
+        else {
+            continue;
+        };
+        let (JointBasis::Local(b1), JointBasis::Local(b2)) =
+            (joint.frame1.basis, joint.frame2.basis)
+        else {
+            continue;
+        };
+        let strain = ((p2 + r2 * a2) - (p1 + r1 * a1)).length() / bond.cell_size;
+        let angle = (r1 * b1).angle_between(r2 * b2).abs();
+        let slot = &mut out.entry(i).or_default()[bond.material.is_none() as usize];
+        slot.0 = slot.0.max(strain);
+        slot.1 = slot.1.max(angle);
+    }
+}
+
+pub fn diag() {
+    let substeps = std::env::args()
+        .skip_while(|a| a != "--diag")
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32);
+    let template = level::preset_lab();
+    let lattices = lattice_indices(&template);
+    println!("== substeps {substeps}: peak strain / angle after 1.5 s (bonds | pins) ==");
+    println!(
+        "{:<9}{}",
+        "",
+        lattices
+            .iter()
+            .map(|&i| format!("{:>34}", template.elements[i].name))
+            .collect::<String>()
+    );
+    for material in MaterialKind::ALL {
+        let mut level = lab(material);
+        level.substeps = substeps;
+        let m = &mut level.materials;
+        for s in m
+            .table
+            .iter_mut()
+            .map(|p| &mut p.strength)
+            .chain([&mut m.pins])
+        {
+            s.yield_strain = 1e9;
+            s.yield_angle = 1e9;
+            s.break_strain = 1e9;
+            s.break_angle = 1e9;
+        }
+        let mut app = make_app(level);
+        let mut out = HashMap::new();
+        for i in 0..(4.0 * HZ) as usize {
+            app.update();
+            if i as f64 >= 1.5 * HZ {
+                peak_strains(app.world_mut(), &mut out);
+            }
+        }
+        let row: String = lattices
+            .iter()
+            .map(|i| {
+                let [b, p] = out.get(i).copied().unwrap_or_default();
+                format!(
+                    "{:>34}",
+                    format!("{:.3}/{:.3} | {:.3}/{:.3}", b.0, b.1, p.0, p.1)
+                )
+            })
+            .collect();
+        println!("{:<9}{row}", material.name());
+    }
+}
+
+pub fn bench() {
+    for (name, level) in [("lab", level::preset_lab()), ("pong", level::preset_pong())] {
+        for substeps in [16, 32] {
+            let mut level = level.clone();
+            level.substeps = substeps;
+            let mut app = make_app(level);
+            step(&mut app, 0.25);
+            let start = std::time::Instant::now();
+            let n = 128;
+            for _ in 0..n {
+                app.update();
+            }
+            let ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            let bodies = app
+                .world_mut()
+                .query::<&RigidBody>()
+                .iter(app.world())
+                .count();
+            println!("{name} substeps {substeps:>2}: {ms:.2} ms/step ({bodies} bodies)");
+        }
+    }
+}
