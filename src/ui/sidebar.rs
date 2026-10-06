@@ -77,13 +77,14 @@ fn world_section() -> Item {
             number("Bounds ± x", Field::BoundsWidth),
             number("Bounds ± y", Field::BoundsHeight),
             checkbox("Gun (drag it in the editor)", Field::GunEnabled),
-            slider("Drag snap", Field::Snap, 0.0, 50.0, 0),
         ],
     )
 }
 
 fn tools() -> Item {
     column(vec![
+        slider("Grid size (0 = free placement)", Field::Snap, 0.0, 100.0, 0),
+        checkbox("Show grid", Field::ShowGrid),
         caption("Add"),
         row(vec![
             button("Lattice", Action::Add("Lattice"), ButtonVariant::Normal),
@@ -165,6 +166,7 @@ fn help_section() -> Item {
         Section::Help,
         vec![
             caption("Editor: drag to move, right/middle drag to pan, wheel to zoom."),
+            caption("Dragging and arrow keys snap to the grid (Grid size above)."),
             caption("Q/E rotate (Shift: fine), arrows nudge, Ctrl+D duplicate, Del delete."),
             caption("Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo. Tab plays."),
             caption("Play: R restart, C clear debris, B stress overlay, T trajectory."),

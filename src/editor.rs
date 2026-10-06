@@ -21,6 +21,8 @@ pub struct Editor {
     pan: Option<Vec2>,
     /// Grid step for dragging (0 = free).
     pub snap: f32,
+    /// Draw the snap grid behind the level.
+    pub show_grid: bool,
 }
 
 impl Default for Editor {
@@ -29,7 +31,8 @@ impl Default for Editor {
             selected: None,
             drag: None,
             pan: None,
-            snap: 5.0,
+            snap: 10.0,
+            show_grid: true,
         }
     }
 }
@@ -139,6 +142,7 @@ impl Plugin for EditorPlugin {
                         history,
                         sync_previews,
                         scale_labels,
+                        draw_grid,
                         draw_edit_gizmos,
                     )
                         .chain()
@@ -502,6 +506,58 @@ fn camera_controls(
         ortho.scale = (ortho.scale * factor).clamp(0.1, 20.0);
         let cam = transform.translation.truncate();
         transform.translation = (cursor + (cam - cursor) * factor).extend(transform.translation.z);
+    }
+}
+
+/// The snap grid over the visible part of the world. When the grid is too fine for the zoom,
+/// only every 2nd, 4th, ... line is drawn, so lines always stay on true grid positions.
+fn draw_grid(
+    mut gizmos: Gizmos,
+    editor: Res<Editor>,
+    cameras: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
+) {
+    if !editor.show_grid || editor.snap <= 0.0 {
+        return;
+    }
+    let Ok((camera, transform)) = cameras.single() else {
+        return;
+    };
+    let Some(viewport) = camera.logical_viewport_rect() else {
+        return;
+    };
+    let (Ok(a), Ok(b)) = (
+        camera.viewport_to_world_2d(transform, viewport.min),
+        camera.viewport_to_world_2d(transform, viewport.max),
+    ) else {
+        return;
+    };
+    let (min, max) = (a.min(b), a.max(b));
+    const MAX_LINES: f32 = 100.0;
+    let mut step = editor.snap;
+    while (max.x - min.x).max(max.y - min.y) / step > MAX_LINES {
+        step *= 2.0;
+    }
+    let line_color = |k: f32| {
+        let alpha = if k == 0.0 {
+            0.18
+        } else if (k / 5.0).fract() == 0.0 {
+            0.07
+        } else {
+            0.03
+        };
+        Color::srgba(0.6, 0.75, 1.0, alpha)
+    };
+    let mut k = (min.x / step).floor();
+    while k * step <= max.x {
+        let x = k * step;
+        gizmos.line_2d(Vec2::new(x, min.y), Vec2::new(x, max.y), line_color(k));
+        k += 1.0;
+    }
+    let mut k = (min.y / step).floor();
+    while k * step <= max.y {
+        let y = k * step;
+        gizmos.line_2d(Vec2::new(min.x, y), Vec2::new(max.x, y), line_color(k));
+        k += 1.0;
     }
 }
 

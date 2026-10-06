@@ -32,6 +32,7 @@ pub enum Field {
     BoundsHeight,
     GunEnabled,
     Snap,
+    ShowGrid,
     Ammo,
     GunSpeed,
     AutoFire,
@@ -359,6 +360,7 @@ impl Model<'_> {
             Field::BoundsHeight => F(level.bounds.y),
             Field::GunEnabled => B(level.gun),
             Field::Snap => F(self.editor.bypass_change_detection().snap),
+            Field::ShowGrid => B(self.editor.bypass_change_detection().show_grid),
             Field::Ammo => C(Ammo::ALL.iter().position(|a| *a == gun.ammo)?),
             Field::GunSpeed => F(gun.speed),
             Field::AutoFire => F(gun.auto_rate),
@@ -405,6 +407,7 @@ impl Model<'_> {
             Field::BoundsHeight => self.level.bounds.y = num.max(100.0),
             Field::GunEnabled => self.level.gun = flag,
             Field::Snap => self.editor.snap = num.max(0.0),
+            Field::ShowGrid => self.editor.show_grid = flag,
             Field::Ammo => {
                 if let Value::C(i) = value
                     && let Some(&ammo) = Ammo::ALL.get(i)

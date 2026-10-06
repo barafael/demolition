@@ -132,6 +132,30 @@ impl Default for Gun {
     }
 }
 
+impl Gun {
+    /// Advances the trigger by `dt` and says whether to fire now. Without auto-fire, each click
+    /// fires once. With auto-fire, the gun fires as soon as the button goes down and then once
+    /// per interval while it is held. The cooldown is clamped to one interval, so raising the
+    /// rate takes effect at once and a slow frame catches up by at most one shot.
+    pub fn trigger(&mut self, held: bool, just_pressed: bool, dt: f32) -> bool {
+        if self.auto_rate <= 0.0 {
+            self.cooldown = 0.0;
+            return just_pressed;
+        }
+        let interval = 1.0 / self.auto_rate;
+        if !held {
+            self.cooldown = 0.0;
+            return false;
+        }
+        self.cooldown = (self.cooldown - dt).clamp(-interval, interval);
+        if self.cooldown > 0.0 {
+            return false;
+        }
+        self.cooldown += interval;
+        true
+    }
+}
+
 /// Something the gun fired (a ball, or the root of a cluster).
 #[derive(Component)]
 pub struct Projectile;
@@ -263,4 +287,55 @@ pub fn aim_at(from: Vec2, to: Vec2, speed: f32, gravity: f32) -> Vec2 {
     }
     let angle = ((v2 - disc.sqrt()) / (g * d.x.abs())).atan();
     Vec2::new(angle.cos() * d.x.signum(), angle.sin())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shots fired while holding (or, without auto-fire, clicking every frame) for `seconds`.
+    fn shots(gun: &mut Gun, seconds: f32, fps: f32) -> usize {
+        let frames = (seconds * fps) as usize;
+        (0..frames)
+            .filter(|&frame| gun.trigger(true, frame == 0, 1.0 / fps))
+            .count()
+    }
+
+    #[test]
+    fn single_shot_fires_once_per_click() {
+        let mut gun = Gun::default();
+        assert_eq!(shots(&mut gun, 1.0, 60.0), 1);
+    }
+
+    #[test]
+    fn auto_fire_works_right_after_single_shots() {
+        // The bug: a single shot used to leave a 1000 s cooldown behind.
+        let mut gun = Gun::default();
+        assert!(gun.trigger(true, true, 1.0 / 60.0));
+        gun.auto_rate = 10.0;
+        let fired = shots(&mut gun, 1.0, 60.0);
+        assert!(
+            (9..=11).contains(&fired),
+            "fired {fired} shots in 1 s at 10/s"
+        );
+    }
+
+    #[test]
+    fn auto_fire_keeps_its_rate_and_does_not_burst_after_a_pause() {
+        let mut gun = Gun {
+            auto_rate: 20.0,
+            ..default()
+        };
+        let fired = shots(&mut gun, 2.0, 144.0);
+        assert!(
+            (39..=41).contains(&fired),
+            "fired {fired} shots in 2 s at 20/s"
+        );
+        // Released for a while: the next press fires once, not a backlog.
+        for _ in 0..300 {
+            gun.trigger(false, false, 1.0 / 60.0);
+        }
+        assert!(gun.trigger(true, true, 1.0 / 60.0));
+        assert!(!gun.trigger(true, false, 1.0 / 60.0));
+    }
 }

@@ -171,15 +171,13 @@ fn aim_and_fire(
         gun.dir = dir;
     }
 
-    gun.cooldown -= time.delta_secs();
-    let shoot = if gun.auto_rate > 0.0 {
-        buttons.pressed(MouseButton::Left) && gun.cooldown <= 0.0
-    } else {
-        buttons.just_pressed(MouseButton::Left)
-    };
+    let shoot = gun.trigger(
+        buttons.pressed(MouseButton::Left),
+        buttons.just_pressed(MouseButton::Left),
+        time.delta_secs(),
+    );
     if shoot {
         fire(&mut commands, &materials, anchor.0, &gun);
-        gun.cooldown = 1.0 / gun.auto_rate.max(0.001);
     }
 }
 
