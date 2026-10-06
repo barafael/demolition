@@ -40,6 +40,8 @@ pub enum Field {
     Paused,
     StressOverlay,
     Trajectory,
+    ImpactFx,
+    StressGlow,
     /// A material parameter; `None` is the pins.
     Material(Option<MaterialKind>, MatParam),
     /// A property of the selected element.
@@ -48,6 +50,7 @@ pub enum Field {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MatParam {
+    Explosive,
     Density,
     Friction,
     Restitution,
@@ -198,7 +201,7 @@ fn strength(s: &Strength, p: MatParam) -> f32 {
         MatParam::Ductility => s.ductility,
         MatParam::BreakStrain => s.break_strain,
         MatParam::BreakAngle => s.break_angle,
-        MatParam::Density | MatParam::Friction | MatParam::Restitution => 0.0,
+        MatParam::Density | MatParam::Friction | MatParam::Restitution | MatParam::Explosive => 0.0,
     }
 }
 
@@ -211,7 +214,9 @@ fn strength_mut(s: &mut Strength, p: MatParam) -> Option<&mut f32> {
         MatParam::Ductility => &mut s.ductility,
         MatParam::BreakStrain => &mut s.break_strain,
         MatParam::BreakAngle => &mut s.break_angle,
-        MatParam::Density | MatParam::Friction | MatParam::Restitution => return None,
+        MatParam::Density | MatParam::Friction | MatParam::Restitution | MatParam::Explosive => {
+            return None;
+        }
     })
 }
 
@@ -368,10 +373,13 @@ impl Model<'_> {
             Field::Paused => B(self.time.is_paused()),
             Field::StressOverlay => B(view.stress_overlay),
             Field::Trajectory => B(view.trajectory),
+            Field::ImpactFx => B(view.impact_fx),
+            Field::StressGlow => B(view.stress_glow),
             Field::Material(kind, param) => F(match (kind, param) {
                 (Some(k), MatParam::Density) => materials.get(k).density,
                 (Some(k), MatParam::Friction) => materials.get(k).friction,
                 (Some(k), MatParam::Restitution) => materials.get(k).restitution,
+                (Some(k), MatParam::Explosive) => materials.get(k).explosive,
                 (Some(k), p) => strength(&materials.get(k).strength, p),
                 (None, p) => strength(&materials.pins, p),
             }),
@@ -428,6 +436,8 @@ impl Model<'_> {
             }
             Field::StressOverlay => self.view.stress_overlay = flag,
             Field::Trajectory => self.view.trajectory = flag,
+            Field::ImpactFx => self.view.impact_fx = flag,
+            Field::StressGlow => self.view.stress_glow = flag,
             Field::Material(kind, param) => {
                 let materials = &mut self.level.materials;
                 let slot = match (kind, param) {
@@ -437,6 +447,9 @@ impl Model<'_> {
                     }
                     (Some(k), MatParam::Restitution) => {
                         Some(&mut materials.table[k as usize].restitution)
+                    }
+                    (Some(k), MatParam::Explosive) => {
+                        Some(&mut materials.table[k as usize].explosive)
                     }
                     (Some(k), p) => strength_mut(&mut materials.table[k as usize].strength, p),
                     (None, p) => strength_mut(&mut materials.pins, p),

@@ -2246,6 +2246,7 @@ dependencies = [
  "bevy",
  "bevy_color",
  "glam 0.32.1",
+ "miniz_oxide 0.8.9",
  "ron",
  "serde",
  "web-sys",

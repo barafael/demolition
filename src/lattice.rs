@@ -23,7 +23,16 @@ pub struct Cell {
     pub was_bonded: bool,
     /// Seconds since the cell lost its last bond.
     pub loose_for: f32,
+    /// Highest load on its bonds this physics step, relative to their break limits.
+    pub stress: f32,
+    /// Slowly following average of `stress`: the steady load (e.g. from gravity). The stress
+    /// glow shows `stress` above this, i.e. impacts travelling through the structure.
+    pub stress_base: f32,
 }
+
+/// An explosive cell that lost a bond; it blows up this frame.
+#[derive(Component)]
+pub struct Detonating;
 
 /// A bond between two cells, or a pin (`material == None`) between an anchor and a body.
 #[derive(Component)]
@@ -159,6 +168,8 @@ pub fn spawn_lattice(
                     bonds: 0,
                     was_bonded: false,
                     loose_for: 0.0,
+                    stress: 0.0,
+                    stress_base: 0.0,
                 },
                 group,
                 RigidBody::Dynamic,

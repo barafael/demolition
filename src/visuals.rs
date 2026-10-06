@@ -20,6 +20,10 @@ pub struct VisualsPlugin;
 pub struct View {
     pub stress_overlay: bool,
     pub trajectory: bool,
+    /// Screen shake and slow motion on big breaks and explosions.
+    pub impact_fx: bool,
+    /// Cells glow where load changes, so impacts can be seen travelling.
+    pub stress_glow: bool,
 }
 
 impl Default for View {
@@ -27,6 +31,8 @@ impl Default for View {
         Self {
             stress_overlay: false,
             trajectory: true,
+            impact_fx: true,
+            stress_glow: true,
         }
     }
 }
@@ -188,7 +194,11 @@ fn play_hotkeys(
     mut time: ResMut<Time<Virtual>>,
     mut clear: ResMut<ClearDebris>,
     mut restart: ResMut<Restart>,
+    mut gravity: ResMut<Gravity>,
 ) {
+    if keys.just_pressed(KeyCode::KeyG) {
+        gravity.0 = -gravity.0;
+    }
     let digits = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -246,15 +256,20 @@ fn attach_round_meshes(
     }
 }
 
-fn tint_cells(materials: Res<Materials>, mut cells: Query<(&Cell, &mut Sprite)>) {
+fn tint_cells(materials: Res<Materials>, view: Res<View>, mut cells: Query<(&Cell, &mut Sprite)>) {
     let cracked = Color::srgb(0.25, 0.05, 0.05);
+    let hot = Color::srgb(1.0, 0.78, 0.35);
     for (cell, mut sprite) in &mut cells {
         let base = materials.get(cell.material).color;
         // Debris fades out over its last two seconds.
         let fade = ((crate::play::DEBRIS_LIFETIME - cell.loose_for) / 2.0).clamp(0.0, 1.0);
-        let color = base
-            .mix(&cracked, cell.damage.clamp(0.0, 1.0) * 0.85)
-            .with_alpha(fade);
+        let mut color = base.mix(&cracked, cell.damage.clamp(0.0, 1.0) * 0.85);
+        if view.stress_glow {
+            // Load above the cell's steady baseline: an impact passing through.
+            let glow = ((cell.stress - cell.stress_base) * 3.0).clamp(0.0, 1.0);
+            color = color.mix(&hot, glow * 0.85);
+        }
+        let color = color.with_alpha(fade);
         // Only write on change, so unchanged sprites aren't flagged as modified.
         if sprite.color != color {
             sprite.color = color;
@@ -340,11 +355,11 @@ fn draw_bonds(
 fn draw_breaks(mut gizmos: Gizmos, mut breaks: ResMut<Breaks>, time: Res<Time<Virtual>>) {
     const FLASH: f32 = 0.35;
     let now = time.elapsed_secs();
-    breaks.0.retain(|(_, t)| now - *t < FLASH);
-    for (pos, t) in &breaks.0 {
-        let age = (now - t) / FLASH;
+    breaks.0.retain(|b| now - b.time < FLASH);
+    for b in &breaks.0 {
+        let age = (now - b.time) / FLASH;
         gizmos.circle_2d(
-            *pos,
+            b.pos,
             2.0 + 10.0 * age,
             Color::srgba(1.0, 0.85, 0.3, 1.0 - age),
         );

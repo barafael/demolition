@@ -1,4 +1,5 @@
 mod editor;
+mod effects;
 mod fracture;
 mod gun;
 mod lattice;
@@ -52,6 +53,8 @@ impl Plugin for SimPlugin {
 /// Native: `--level <preset or saved name> --play`. Web: `?level=<name>&play`.
 struct Launch {
     level: Option<String>,
+    /// A share link or its data (`l=` in the URL, `--link` natively).
+    link: Option<String>,
     play: bool,
 }
 
@@ -59,11 +62,14 @@ impl Launch {
     #[cfg(not(target_arch = "wasm32"))]
     fn read() -> Self {
         let args: Vec<String> = std::env::args().collect();
+        let value = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
         Self {
-            level: args
-                .iter()
-                .position(|a| a == "--level")
-                .and_then(|i| args.get(i + 1).cloned()),
+            level: value("--level"),
+            link: value("--link"),
             play: args.iter().any(|a| a == "--play"),
         }
     }
@@ -84,11 +90,21 @@ impl Launch {
                 .iter()
                 .find(|(k, _)| *k == "level")
                 .map(|(_, v)| v.to_string()),
+            link: params
+                .iter()
+                .find(|(k, _)| *k == "l")
+                .map(|(_, v)| v.to_string()),
             play: params.iter().any(|(k, _)| *k == "play"),
         }
     }
 
     fn level(&self) -> Level {
+        if let Some(link) = &self.link {
+            match level::from_link(link) {
+                Ok(level) => return level,
+                Err(e) => warn!("could not open the shared level: {e}"),
+            }
+        }
         match self.level.as_deref() {
             None | Some("lab") => level::preset_lab(),
             Some("pong") => level::preset_pong(),
@@ -111,6 +127,9 @@ fn main() {
     }
     if arg("--probe") {
         return probe::run();
+    }
+    if arg("--tnt") {
+        return probe::tnt();
     }
     if arg("--rest") {
         return probe::rest_speeds();
@@ -137,6 +156,7 @@ fn main() {
     .add_plugins((
         SimPlugin,
         visuals::VisualsPlugin,
+        effects::EffectsPlugin,
         editor::EditorPlugin,
         ui::UiPlugin,
     ))

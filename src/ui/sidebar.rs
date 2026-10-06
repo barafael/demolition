@@ -49,7 +49,10 @@ fn world_section() -> Item {
             text_input(Field::LevelName),
             row(vec![
                 button("Save", Action::Save, ButtonVariant::Primary),
-                button("Copy", Action::CopyLevel, ButtonVariant::Normal),
+                button("Copy link", Action::CopyLink, ButtonVariant::Normal),
+            ]),
+            row(vec![
+                button("Copy text", Action::CopyLevel, ButtonVariant::Normal),
                 button("Paste", Action::PasteLevel, ButtonVariant::Normal),
             ]),
             Box::new(
@@ -110,6 +113,13 @@ fn material_params(kind: Option<MaterialKind>) -> Vec<Item> {
             slider("Density", f(MatParam::Density), 0.001, 0.2, 3),
             slider("Friction", f(MatParam::Friction), 0.0, 1.5, 2),
             slider("Restitution", f(MatParam::Restitution), 0.0, 1.0, 2),
+            slider(
+                "Explosive power (0 = inert)",
+                f(MatParam::Explosive),
+                0.0,
+                5.0,
+                2,
+            ),
         ]);
     }
     items.extend([
@@ -170,7 +180,7 @@ fn help_section() -> Item {
             caption("Q/E rotate (Shift: fine), arrows nudge, Ctrl+D duplicate, Del delete."),
             caption("Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo. Tab plays."),
             caption("Play: R restart, C clear debris, B stress overlay, T trajectory."),
-            caption("M slow motion, Space pause, Tab back to the editor."),
+            caption("G flips gravity, M slow motion, Space pause, Tab back to the editor."),
             caption("Gun: left click fires, right click moves it, wheel sets speed, 1-6 ammo."),
         ],
     )
@@ -235,6 +245,8 @@ pub fn spawn(mut commands: Commands) {
                         checkbox("Paused", Field::Paused),
                         checkbox("Stress overlay", Field::StressOverlay),
                         checkbox("Trajectory preview", Field::Trajectory),
+                        checkbox("Stress glow", Field::StressGlow),
+                        checkbox("Shake & slow motion on big breaks", Field::ImpactFx),
                     ],
                 ),
             ],

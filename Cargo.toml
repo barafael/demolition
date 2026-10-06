@@ -45,6 +45,8 @@ bevy = { version = "0.19", default-features = false, features = [
 ] }
 avian2d = { version = "0.7", default-features = false, features = ["2d", "f32", "parry-f32", "xpbd_joints"] }
 ron = "0.12"
+# Compresses levels into share links; already in the tree via the PNG decoder.
+miniz_oxide = "0.8"
 serde = { version = "1", features = ["derive"] }
 # Serde for the math and color types stored in levels, without Bevy-wide `serialize`.
 # Versions must match the ones Bevy uses so these are the same crates.

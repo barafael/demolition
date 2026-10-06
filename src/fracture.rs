@@ -8,7 +8,7 @@ use std::f32::consts::{PI, TAU};
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::lattice::{Bond, Cell};
+use crate::lattice::{Bond, Cell, Detonating};
 use crate::materials::Materials;
 
 #[derive(Resource, Default)]
@@ -18,9 +18,22 @@ pub struct Stats {
     pub plastic: f32,
 }
 
-/// Recent bond failures, for drawing a flash where they happened.
+/// A bond failure, for effects at the place it happened.
+#[derive(Clone, Copy)]
+pub struct Break {
+    pub pos: Vec2,
+    /// Virtual time of the break.
+    pub time: f32,
+    /// Color of the material that broke (pins count as steel-grey).
+    pub color: Color,
+}
+
+/// Recent bond failures. Effects read them; `draw_breaks` prunes old ones.
 #[derive(Resource, Default)]
-pub struct Breaks(pub Vec<(Vec2, f32)>);
+pub struct Breaks(pub Vec<Break>);
+
+/// How fast a cell's stress baseline follows its stress, per physics step.
+const STRESS_BASE_RATE: f32 = 0.03;
 
 fn wrap_angle(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
@@ -38,6 +51,7 @@ pub fn plasticity(
 ) {
     for mut cell in &mut cells {
         cell.bonds = 0;
+        cell.stress = 0.0;
     }
     stats.bonds = 0;
     let now = time.elapsed_secs();
@@ -102,11 +116,19 @@ pub fn plasticity(
         } else {
             wear.max(bond.strain * 0.5).min(1.0)
         };
+        let mut color = Color::srgb(0.55, 0.57, 0.6);
         for body in [joint.body1, joint.body2] {
             if let Ok(mut cell) = cells.get_mut(body) {
                 cell.damage = cell.damage.max(wear * 0.8);
+                cell.stress = cell.stress.max(bond.strain);
                 if !broken {
                     cell.bonds += 1;
+                    continue;
+                }
+                let params = materials.get(cell.material);
+                color = params.color;
+                if params.explosive > 0.0 {
+                    commands.entity(body).insert(Detonating);
                 }
             }
         }
@@ -114,7 +136,11 @@ pub fn plasticity(
         if broken {
             commands.entity(entity).despawn();
             stats.broken += 1;
-            breaks.0.push(((w1 + w2) * 0.5, now));
+            breaks.0.push(Break {
+                pos: (w1 + w2) * 0.5,
+                time: now,
+                color,
+            });
             continue;
         }
         stats.bonds += 1;
@@ -124,5 +150,10 @@ pub fn plasticity(
             joint.frame1.basis = JointBasis::Local(b1);
             joint.frame2.basis = JointBasis::Local(b2);
         }
+    }
+
+    for mut cell in &mut cells {
+        let base = cell.stress_base;
+        cell.stress_base = base + (cell.stress - base) * STRESS_BASE_RATE;
     }
 }

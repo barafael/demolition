@@ -16,22 +16,33 @@ bond's strain is measured: elastic strain springs back, strain past the material
 absorbed into the bond's rest pose (it stays bent) and accumulates damage, and the bond breaks
 when the damage exceeds the material's ductility or the strain its break limit.
 
+Materials: glass, wood, concrete, steel, rubber, clay, ice, jelly, honey and TNT. Any material
+can be made explosive ("Explosive power"); explosive cells go off when they start to break,
+so charges chain-react. Impacts glow as they travel through structures, breaks throw dust and
+sparks, and big events shake the screen and briefly slow time (both can be switched off under
+View).
+
 ## Run natively
 
 ```sh
 cargo run --release                          # editor with the Lab preset
 cargo run --release -- --level pong --play   # straight into Pong
+cargo run --release -- --link '<share link>' # open a shared level
 ```
 
 **Editor:** drag to move, RMB/MMB pan, wheel zoom, Q/E rotate, Ctrl+D duplicate, Del delete,
 Ctrl+Z / Ctrl+Shift+Z undo/redo, Tab to play. **Play:** R restart, C clear debris, B stress
-overlay, M slow-mo, Space pause, Tab back to the editor. Pong: WASD vs. arrow keys.
+overlay, G flip gravity, M slow-mo, Space pause, Tab back to the editor. Pong: WASD vs. arrow
+keys.
 
-The sidebar's first entry, **World**, holds the level: name, save/load, presets, Copy/Paste
-(a level as RON text via the clipboard) and physics settings. The toolbar on the right tweaks
+The sidebar's first entry, **World**, holds the level: name, save/load, presets, sharing and
+physics settings. **Copy link** puts a link on the clipboard that opens the level in any
+browser: the whole level is compressed into the URL, nothing is uploaded. Paste accepts such a
+link or a level as RON text. The toolbar on the right tweaks
 the selected element. Levels are saved as RON in `levels/`.
 
-Headless tuning tools: `--probe` (materials × ammo matrix), `--pong`, `--diag [substeps]`, `--bench`.
+Headless tuning tools: `--probe` (materials × ammo matrix), `--pong`, `--tnt`, `--rest`,
+`--diag [substeps]`, `--bench`.
 
 ## Web build
 

@@ -208,6 +208,7 @@ pub enum Action {
     Load(String),
     Preset(&'static str),
     CopyLevel,
+    CopyLink,
     PasteLevel,
     ResetMaterials,
     ToggleSection(Section),
@@ -340,6 +341,13 @@ fn apply_actions(
                     Err(e) => format!("Copy failed: {e}"),
                 };
             }
+            Action::CopyLink => {
+                files.status = match level::to_link(&level).map(|link| clipboard.set_text(link)) {
+                    Ok(Ok(())) => "Share link copied: it opens the level in a browser".into(),
+                    Ok(Err(e)) => format!("Copy failed: {e:?}"),
+                    Err(e) => format!("Copy failed: {e}"),
+                };
+            }
             Action::PasteLevel => paste.0 = Some(clipboard.fetch_text()),
             Action::ResetMaterials => {
                 level.materials = Default::default();
@@ -370,7 +378,8 @@ fn poll_paste(
     paste.0 = None;
     files.status = match result
         .map_err(|e| format!("{e:?}"))
-        .and_then(|text| level::from_ron(&text))
+        // Either level text or a share link.
+        .and_then(|text| level::from_ron(&text).or_else(|e| level::from_link(&text).map_err(|_| e)))
     {
         Ok(pasted) => {
             let status = format!("Pasted {}", pasted.name);

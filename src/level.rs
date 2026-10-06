@@ -655,6 +655,85 @@ pub fn from_ron(text: &str) -> Result<Level, String> {
     ron::from_str(text).map_err(|e| e.to_string())
 }
 
+/// Where share links point when not running in a browser.
+const PUBLIC_URL: &str = "https://barafael.github.io/demolition/";
+
+/// The page links should open: this page in the browser, the public site otherwise.
+fn share_base() -> String {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(location) = web_sys::window().map(|w| w.location())
+        && let (Ok(origin), Ok(path)) = (location.origin(), location.pathname())
+    {
+        return format!("{origin}{path}");
+    }
+    PUBLIC_URL.to_string()
+}
+
+/// A link that opens the level, playing, in the web version. The level travels in the URL,
+/// deflate-compressed and base64url-encoded, so nothing has to be hosted.
+pub fn to_link(level: &Level) -> Result<String, String> {
+    let text = ron::to_string(level).map_err(|e| e.to_string())?;
+    let packed = miniz_oxide::deflate::compress_to_vec(text.as_bytes(), 9);
+    Ok(format!(
+        "{}?l={}&play",
+        share_base(),
+        base64url::encode(&packed)
+    ))
+}
+
+/// Reads a level from a share link, or just its `l=` data.
+pub fn from_link(link: &str) -> Result<Level, String> {
+    let link = link.trim();
+    let data = link
+        .split(['?', '&', '#'])
+        .find_map(|part| part.strip_prefix("l="))
+        .unwrap_or(link);
+    let packed = base64url::decode(data).ok_or("not a level link")?;
+    let text = miniz_oxide::inflate::decompress_to_vec_with_limit(&packed, 8 << 20)
+        .map_err(|e| format!("damaged level link ({e:?})"))?;
+    from_ron(std::str::from_utf8(&text).map_err(|e| e.to_string())?)
+}
+
+/// Unpadded base64 with the URL-safe alphabet, so links need no escaping.
+mod base64url {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    pub fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+            for i in 0..=chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Option<Vec<u8>> {
+        let digits: Vec<u32> = text
+            .bytes()
+            .map(|c| ALPHABET.iter().position(|&a| a == c).map(|v| v as u32))
+            .collect::<Option<_>>()?;
+        let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+        for chunk in digits.chunks(4) {
+            if chunk.len() < 2 {
+                return None;
+            }
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, &d)| n | d << (18 - 6 * i));
+            for i in 0..chunk.len() - 1 {
+                out.push((n >> (16 - 8 * i)) as u8);
+            }
+        }
+        Some(out)
+    }
+}
+
 /// Saves the level and returns where it went.
 pub fn save(level: &Level) -> Result<String, String> {
     storage::write(&format!("{LEVEL_PREFIX}{}", level.name), &to_ron(level)?)
@@ -705,6 +784,35 @@ mod tests {
             let back: Level = ron::from_str(&text).unwrap();
             assert_eq!(back, level);
         }
+    }
+
+    #[test]
+    fn levels_round_trip_through_share_links() {
+        for level in [preset_empty(), preset_lab(), preset_pong()] {
+            let link = to_link(&level).unwrap();
+            assert!(
+                link.len() < 8000,
+                "{} link is {} characters",
+                level.name,
+                link.len()
+            );
+            assert_eq!(from_link(&link).unwrap(), level);
+            // Just the data works too.
+            let data = link.split("l=").nth(1).unwrap().split('&').next().unwrap();
+            assert_eq!(from_link(data).unwrap(), level);
+        }
+    }
+
+    #[test]
+    fn base64url_handles_every_length() {
+        for len in 0..20 {
+            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(
+                base64url::decode(&base64url::encode(&bytes)).unwrap(),
+                bytes
+            );
+        }
+        assert!(base64url::decode("not+valid").is_none());
     }
 
     #[test]

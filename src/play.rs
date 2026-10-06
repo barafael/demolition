@@ -9,7 +9,8 @@ use bevy::prelude::*;
 use crate::fracture::{Breaks, Stats};
 use crate::gun::{Gun, Projectile, Round};
 use crate::lattice::{
-    Bond, Cell, Doomed, Group, GroupRoot, LatticeSpec, Pin, WorldAnchor, spawn_lattice, spawn_pin,
+    Bond, Cell, Detonating, Doomed, Group, GroupRoot, LatticeSpec, Pin, WorldAnchor, spawn_lattice,
+    spawn_pin,
 };
 use crate::level::{Axis, Body, Control, Credit, Element, Highscores, Level, Player};
 use crate::materials::Materials;
@@ -140,6 +141,31 @@ struct Respawns(Vec<(usize, f32)>);
 const RESPAWN_DELAY: f32 = 1.5;
 /// Loose debris is removed after this long, so long sessions don't slow down as it piles up.
 pub const DEBRIS_LIFETIME: f32 = 20.0;
+/// Reach of an explosion of power 1, in pixels; it grows with the square root of the power.
+const BLAST_RADIUS: f32 = 90.0;
+/// Impulse an explosion of power 1 gives a body right next to it.
+const BLAST_IMPULSE: f32 = 1500.0;
+/// Sanity limit for stacked blasts from a whole charge going off at once.
+const MAX_BLAST_SPEED: f32 = 12000.0;
+/// Bodies a blast makes faster than this get swept CCD for a moment, so they can't tunnel
+/// through walls.
+const BLAST_CCD_SPEED: f32 = 1500.0;
+const BLAST_CCD_SECONDS: f32 = 1.0;
+
+/// Swept CCD that a blast added, and when to take it away again.
+#[derive(Component)]
+struct BlastCcd(f32);
+
+/// Explosions this frame, for effects (flash, shake, particles).
+#[derive(Resource, Default)]
+pub struct Explosions(pub Vec<Explosion>);
+
+#[derive(Clone, Copy)]
+pub struct Explosion {
+    pub pos: Vec2,
+    pub radius: f32,
+    pub power: f32,
+}
 
 pub struct PlayPlugin;
 
@@ -151,6 +177,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Restart>()
             .init_resource::<Respawns>()
             .init_resource::<ClearDebris>()
+            .init_resource::<Explosions>()
             .init_resource::<Highscores>()
             .add_systems(PreUpdate, sync_level_materials)
             .add_systems(OnEnter(Mode::Play), enter_play)
@@ -167,6 +194,8 @@ impl Plugin for PlayPlugin {
                     keep_speed,
                     track_elements,
                     respawn,
+                    detonate,
+                    expire_blast_ccd,
                     age_debris,
                     cull_out_of_bounds,
                 )
@@ -653,6 +682,78 @@ fn respawn(
         }
         false
     });
+}
+
+/// Blows up detonating cells: every dynamic body in reach gets an outward impulse that fades with
+/// distance (so light debris flies further than heavy pieces), and the cell itself is gone.
+/// Neighbouring explosive cells are shaken loose by this and go off on a later step, which makes
+/// chain reactions spread through a charge instead of all at once.
+fn detonate(
+    mut commands: Commands,
+    materials: Res<Materials>,
+    detonating: Query<(Entity, &Position, &Cell), (With<Detonating>, Without<Doomed>)>,
+    mut bodies: Query<
+        (
+            Entity,
+            &Position,
+            &ComputedMass,
+            &mut LinearVelocity,
+            Has<Sleeping>,
+            Has<SweptCcd>,
+        ),
+        Without<Doomed>,
+    >,
+    mut explosions: ResMut<Explosions>,
+) {
+    explosions.0.clear();
+    for (source, center, cell) in &detonating {
+        let power = materials.get(cell.material).explosive;
+        commands.entity(source).insert(Doomed);
+        if power <= 0.0 {
+            continue;
+        }
+        let radius = BLAST_RADIUS * power.sqrt();
+        for (entity, pos, mass, mut velocity, asleep, has_ccd) in &mut bodies {
+            let offset = pos.0 - center.0;
+            let distance = offset.length();
+            if entity == source || distance >= radius || mass.inverse() == 0.0 {
+                continue;
+            }
+            let falloff = 1.0 - distance / radius;
+            let direction = offset.try_normalize().unwrap_or(Vec2::Y);
+            let pushed =
+                velocity.0 + direction * (BLAST_IMPULSE * power * falloff * mass.inverse());
+            velocity.0 = pushed.clamp_length_max(MAX_BLAST_SPEED.max(velocity.0.length()));
+            if !has_ccd && velocity.0.length() > BLAST_CCD_SPEED {
+                commands
+                    .entity(entity)
+                    .insert((SweptCcd::default(), BlastCcd(BLAST_CCD_SECONDS)));
+            }
+            // Only sleeping bodies belong to an island Avian can wake (others are awake anyway).
+            if asleep {
+                commands.queue(WakeBody(entity));
+            }
+        }
+        explosions.0.push(Explosion {
+            pos: center.0,
+            radius,
+            power,
+        });
+    }
+}
+
+/// Takes away the swept CCD a blast added, once the debris has slowed down to normal speeds.
+fn expire_blast_ccd(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut blasted: Query<(Entity, &mut BlastCcd)>,
+) {
+    for (entity, mut ccd) in &mut blasted {
+        ccd.0 -= time.delta_secs();
+        if ccd.0 <= 0.0 {
+            commands.entity(entity).remove::<(SweptCcd, BlastCcd)>();
+        }
+    }
 }
 
 /// Cells that lost all their bonds are debris: they fade out (see visuals) and are removed after

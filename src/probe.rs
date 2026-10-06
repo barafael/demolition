@@ -343,6 +343,83 @@ fn pong_run(level: Level) {
     );
 }
 
+/// `--tnt`: a cannonball into a TNT charge next to a wooden pillar. Reports how many TNT cells
+/// went off (chain reaction) and what the blast did to the pillar.
+pub fn tnt() {
+    let mut level = level::preset_empty();
+    level.elements.push(crate::level::Element {
+        name: "Charge".into(),
+        pos: Vec2::new(0.0, -370.0),
+        body: Body::Lattice {
+            material: MaterialKind::Tnt,
+            cols: 6,
+            rows: 6,
+            cell: 10.0,
+            round: false,
+        },
+        pins: crate::level::Pins {
+            bottom: true,
+            ..default()
+        },
+        ..default()
+    });
+    level.elements.push(crate::level::Element {
+        name: "Pillar".into(),
+        pos: Vec2::new(70.0, -270.0),
+        body: Body::Lattice {
+            material: MaterialKind::Wood,
+            cols: 3,
+            rows: 26,
+            cell: 10.0,
+            round: false,
+        },
+        pins: crate::level::Pins {
+            bottom: true,
+            ..default()
+        },
+        ..default()
+    });
+    let mut app = make_app(level);
+    step(&mut app, 0.5);
+    let before = count_bonds(app.world_mut());
+    let tnt_cells = |world: &mut World| {
+        world
+            .query::<&Cell>()
+            .iter(world)
+            .filter(|c| c.material == MaterialKind::Tnt)
+            .count()
+    };
+    let charge = tnt_cells(app.world_mut());
+    let world = app.world_mut();
+    let materials = world.resource::<Materials>().clone();
+    let anchor = world.resource::<WorldAnchor>().0;
+    let from = Vec2::new(-400.0, -360.0);
+    let gun = Gun {
+        pos: from,
+        dir: aim_at(from, Vec2::new(-25.0, -370.0), 1400.0, 900.0),
+        ammo: Ammo::Cannonball,
+        speed: 1400.0,
+        ..default()
+    };
+    fire(&mut world.commands(), &materials, anchor, &gun);
+    world.flush();
+    let mut blasts = 0;
+    for _ in 0..(3.0 * HZ) as usize {
+        app.update();
+        blasts += app.world().resource::<crate::play::Explosions>().0.len();
+    }
+    let after = count_bonds(app.world_mut());
+    let left = tnt_cells(app.world_mut());
+    let pillar = lost(&before, &after, 2);
+    println!("== TNT: 6x6 charge hit by a cannonball, 3 s ==");
+    println!(
+        "   {blasts} explosions, {} of {charge} TNT cells gone, pillar lost {} bonds and {} pins",
+        charge - left,
+        pillar.0,
+        pillar.1
+    );
+}
+
 /// Peak geometric strain and bend angle per element, for bonds and pins separately.
 fn peak_strains(world: &mut World, out: &mut HashMap<usize, [(f32, f32); 2]>) {
     let roots = root_indices(world);
