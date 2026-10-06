@@ -1,9 +1,10 @@
 //! Rendering, gizmo overlays and play-mode mouse/keyboard input for the windowed app.
 
 use avian2d::prelude::*;
+use bevy::camera::Viewport;
+use bevy::camera::visibility::RenderLayers;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
-use bevy_egui::input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input};
 
 use crate::fracture::Breaks;
 use crate::gun::{Ammo, Gun, MUZZLE, Round, fire};
@@ -11,6 +12,7 @@ use crate::lattice::{Bond, Cell, WorldAnchor};
 use crate::level::Level;
 use crate::materials::Materials;
 use crate::play::{ClearDebris, CursorWorld, Mode, Restart};
+use crate::ui::{pointer_over_ui, typing};
 
 pub struct VisualsPlugin;
 
@@ -33,17 +35,16 @@ impl Plugin for VisualsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.07, 0.07, 0.09)))
             .init_resource::<View>()
-            .add_systems(Startup, |mut commands: Commands| {
-                commands.spawn(Camera2d);
-            })
+            .add_systems(Startup, spawn_cameras)
+            .add_systems(PostUpdate, fit_world_viewport)
             .add_systems(PreUpdate, update_cursor)
             .add_systems(
                 Update,
                 (
-                    toggle_mode.run_if(not(egui_wants_any_keyboard_input)),
+                    toggle_mode.run_if(not(typing)),
                     (
-                        aim_and_fire.run_if(not(egui_wants_any_pointer_input)),
-                        play_hotkeys.run_if(not(egui_wants_any_keyboard_input)),
+                        aim_and_fire.run_if(not(pointer_over_ui)),
+                        play_hotkeys.run_if(not(typing)),
                         draw_gun,
                     )
                         .run_if(in_state(Mode::Play)),
@@ -56,9 +57,68 @@ impl Plugin for VisualsPlugin {
     }
 }
 
+/// The camera that shows the game world. UI has its own full-window camera, so the world can
+/// be drawn in just the area between the panels.
+#[derive(Component)]
+pub struct WorldCamera;
+
+/// Render layer only the UI camera uses, so it draws no world sprites or gizmos.
+const UI_LAYER: usize = 31;
+
+fn spawn_cameras(mut commands: Commands) {
+    commands.spawn((Camera2d, WorldCamera));
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        IsDefaultUiCamera,
+        RenderLayers::layer(UI_LAYER),
+    ));
+}
+
+/// Keeps the world camera's viewport clear of the sidebar and the inspector toolbar.
+fn fit_world_viewport(
+    windows: Query<&Window>,
+    mode: Res<State<Mode>>,
+    toolbar: Res<crate::ui::ToolbarOpen>,
+    mut cameras: Query<&mut Camera, With<WorldCamera>>,
+) {
+    let (Ok(window), Ok(mut camera)) = (windows.single(), cameras.single_mut()) else {
+        return;
+    };
+    let right = match mode.get() {
+        Mode::Play => 0.0,
+        Mode::Edit if toolbar.0 => crate::ui::TOOLBAR_WIDTH,
+        Mode::Edit => crate::ui::TOOLBAR_COLLAPSED_WIDTH,
+    };
+    let scale = window.scale_factor();
+    let size = window.physical_size();
+    let left = (crate::ui::SIDEBAR_WIDTH * scale) as u32;
+    let right = (right * scale) as u32;
+    let viewport = (size.x > left + right + 1 && size.y > 1).then(|| Viewport {
+        physical_position: UVec2::new(left, 0),
+        physical_size: UVec2::new(size.x - left - right, size.y),
+        ..default()
+    });
+    let current = camera
+        .viewport
+        .as_ref()
+        .map(|v| (v.physical_position, v.physical_size));
+    if current
+        != viewport
+            .as_ref()
+            .map(|v| (v.physical_position, v.physical_size))
+    {
+        camera.viewport = viewport;
+    }
+}
+
 fn update_cursor(
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     mut cursor: ResMut<CursorWorld>,
 ) {
     cursor.0 = (|| {

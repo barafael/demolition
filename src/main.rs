@@ -11,7 +11,6 @@ mod visuals;
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
-use bevy_egui::EguiPlugin;
 
 use fracture::{Breaks, Stats, plasticity};
 use gun::{Gun, tick_lifetimes};
@@ -134,7 +133,6 @@ fn main() {
     }))
     .add_plugins((
         SimPlugin,
-        EguiPlugin::default(),
         visuals::VisualsPlugin,
         editor::EditorPlugin,
         ui::UiPlugin,

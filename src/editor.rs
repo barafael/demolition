@@ -4,12 +4,13 @@
 use bevy::camera::ScalingMode;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
-use bevy_egui::input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input};
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy::sprite::Anchor;
 
-use crate::level::{Axis, Body, Control, Credit, Element, Level, Pins, Player};
-use crate::materials::{MaterialKind, Materials};
+use crate::level::{Axis, Body, Control, Element, Level};
+use crate::materials::Materials;
 use crate::play::{CursorWorld, Mode, lattice_spec};
+use crate::ui::{pointer_over_ui, typing};
+use crate::visuals::WorldCamera;
 
 pub struct EditorPlugin;
 
@@ -123,9 +124,9 @@ impl Plugin for EditorPlugin {
                 Update,
                 (
                     (
-                        edit_pointer.run_if(not(egui_wants_any_pointer_input)),
-                        edit_keys.run_if(not(egui_wants_any_keyboard_input)),
-                        camera_controls.run_if(not(egui_wants_any_pointer_input)),
+                        edit_pointer.run_if(not(pointer_over_ui)),
+                        edit_keys.run_if(not(typing)),
+                        camera_controls.run_if(not(pointer_over_ui)),
                         history,
                         rebuild_previews,
                         draw_edit_gizmos,
@@ -134,17 +135,13 @@ impl Plugin for EditorPlugin {
                         .run_if(in_state(Mode::Edit)),
                     sync_view.run_if(resource_changed::<Level>),
                 ),
-            )
-            .add_systems(
-                EguiPrimaryContextPass,
-                (inspector, labels).run_if(in_state(Mode::Edit)),
             );
     }
 }
 
 fn reset_camera(
     level: Res<Level>,
-    mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
     for (mut transform, mut projection) in &mut cameras {
         transform.translation = Vec3::ZERO;
@@ -158,7 +155,7 @@ fn reset_camera(
     }
 }
 
-fn sync_view(level: Res<Level>, mut projections: Query<&mut Projection, With<Camera2d>>) {
+fn sync_view(level: Res<Level>, mut projections: Query<&mut Projection, With<WorldCamera>>) {
     for mut projection in &mut projections {
         if let Projection::Orthographic(ortho) = &mut *projection {
             ortho.scaling_mode = ScalingMode::AutoMin {
@@ -212,7 +209,46 @@ fn rebuild_previews(
         } else {
             commands.spawn((Preview, Sprite::from_color(color, size), transform));
         }
+        if let Some(tags) = tags(element) {
+            let top = element.pos + Vec2::Y * (size.y * 0.5 + 4.0);
+            commands.spawn((
+                Preview,
+                Text2d::new(tags),
+                TextFont {
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
+                Anchor::BOTTOM_CENTER,
+                Transform::from_translation(top.extend(5.0)),
+            ));
+        }
     }
+}
+
+/// Name and behaviours, shown above an element in the editor.
+fn tags(element: &Element) -> Option<String> {
+    let mut tags = vec![];
+    if !element.name.is_empty() && !matches!(element.body, Body::Wall { .. }) {
+        tags.push(element.name.clone());
+    }
+    if element.control != Control::None {
+        tags.push(element.control.name().to_string());
+    }
+    if element.points != 0 {
+        tags.push(format!(
+            "{:+} pts to {}",
+            element.points,
+            element.credit.name()
+        ));
+    }
+    if let Some(owner) = element.owner {
+        tags.push(format!("owned by {}", owner.name()));
+    }
+    if element.respawn {
+        tags.push("respawns".into());
+    }
+    (!tags.is_empty()).then(|| tags.join(" | "))
 }
 
 fn snap(v: Vec2, step: f32) -> Vec2 {
@@ -281,7 +317,7 @@ fn edit_pointer(
     }
 }
 
-fn duplicate(level: &mut Level, editor: &mut Editor) {
+pub fn duplicate(level: &mut Level, editor: &mut Editor) {
     if let Some(element) = editor.selected.and_then(|i| level.elements.get(i)).cloned() {
         level.elements.push(Element {
             pos: element.pos + Vec2::new(20.0, -20.0),
@@ -291,7 +327,7 @@ fn duplicate(level: &mut Level, editor: &mut Editor) {
     }
 }
 
-fn delete(level: &mut Level, editor: &mut Editor) {
+pub fn delete(level: &mut Level, editor: &mut Editor) {
     if let Some(i) = editor.selected.take()
         && i < level.elements.len()
     {
@@ -370,7 +406,7 @@ fn camera_controls(
     scroll: Res<AccumulatedMouseScroll>,
     cursor: Res<CursorWorld>,
     mut editor: ResMut<Editor>,
-    mut cameras: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
     let Some(cursor) = cursor.0 else { return };
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {
@@ -498,66 +534,7 @@ fn draw_edit_gizmos(mut gizmos: Gizmos, level: Res<Level>, editor: Res<Editor>) 
     }
 }
 
-/// Names and behaviours drawn next to elements.
-fn labels(
-    mut contexts: EguiContexts,
-    level: Res<Level>,
-    editor: Res<Editor>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let Ok((camera, camera_transform)) = cameras.single() else {
-        return Ok(());
-    };
-    let painter = ctx.layer_painter(egui::LayerId::background());
-    for (index, element) in level.elements.iter().enumerate() {
-        let mut tags = vec![];
-        let named = editor.selected == Some(index) || !matches!(element.body, Body::Wall { .. });
-        if named && !element.name.is_empty() {
-            tags.push(element.name.clone());
-        }
-        if element.control != Control::None {
-            tags.push(element.control.name().to_string());
-        }
-        if element.points != 0 {
-            tags.push(format!(
-                "★ {:+} to {}",
-                element.points,
-                element.credit.name()
-            ));
-        }
-        if let Some(owner) = element.owner {
-            tags.push(format!("owned by {}", owner.name()));
-        }
-        if element.respawn {
-            tags.push("respawns".into());
-        }
-        if tags.is_empty() {
-            continue;
-        }
-        let top = element.pos + Vec2::Y * (element.size().y * 0.5 + 4.0);
-        let Ok(screen) = camera.world_to_viewport(camera_transform, top.extend(0.0)) else {
-            continue;
-        };
-        painter.text(
-            egui::pos2(screen.x, screen.y),
-            egui::Align2::CENTER_BOTTOM,
-            tags.join(" · "),
-            egui::FontId::proportional(11.0),
-            egui::Color32::from_white_alpha(170),
-        );
-    }
-    Ok(())
-}
-
-fn color_edit(ui: &mut egui::Ui, color: &mut [f32; 3]) {
-    ui.horizontal(|ui| {
-        ui.label("color");
-        ui.color_edit_button_rgb(color);
-    });
-}
-
-fn default_body(kind: &str) -> Body {
+pub fn default_body(kind: &str) -> Body {
     match kind {
         "Ball" => Body::Ball {
             radius: 12.0,
@@ -582,275 +559,4 @@ pub fn new_element(kind: &str, pos: Vec2) -> Element {
         body: default_body(kind),
         ..default()
     }
-}
-
-fn inspector(
-    mut contexts: EguiContexts,
-    mut level: ResMut<Level>,
-    mut editor: ResMut<Editor>,
-    windows: Query<&Window>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let Some(index) = editor.selected.filter(|&i| i < level.elements.len()) else {
-        return Ok(());
-    };
-    let width = windows.single().map(|w| w.width()).unwrap_or(1600.0);
-    // Edit a copy so the level is only marked changed when something actually changed.
-    let mut element = level.elements[index].clone();
-    let mut action = None;
-
-    egui::Window::new("Inspector")
-        .default_pos([width - 330.0, 10.0])
-        .default_width(310.0)
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(840.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("name");
-                        ui.text_edit_singleline(&mut element.name);
-                    });
-                    ui.horizontal(|ui| {
-                        let current = element.body.kind_name();
-                        egui::ComboBox::from_label("kind")
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                for kind in ["Lattice", "Ball", "Wall"] {
-                                    if ui.selectable_label(current == kind, kind).clicked()
-                                        && current != kind
-                                    {
-                                        element.body = default_body(kind);
-                                    }
-                                }
-                            });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("pos");
-                        ui.add(egui::DragValue::new(&mut element.pos.x).speed(1.0));
-                        ui.add(egui::DragValue::new(&mut element.pos.y).speed(1.0));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("angle °");
-                        let mut degrees = element.angle.to_degrees();
-                        if ui
-                            .add(egui::DragValue::new(&mut degrees).speed(1.0))
-                            .changed()
-                        {
-                            element.angle = degrees.to_radians();
-                        }
-                    });
-
-                    ui.separator();
-                    match &mut element.body {
-                        Body::Lattice {
-                            material,
-                            cols,
-                            rows,
-                            cell,
-                            round,
-                        } => {
-                            egui::ComboBox::from_label("material")
-                                .selected_text(material.name())
-                                .show_ui(ui, |ui| {
-                                    for kind in MaterialKind::ALL {
-                                        ui.selectable_value(material, kind, kind.name());
-                                    }
-                                });
-                            ui.horizontal(|ui| {
-                                ui.label("cells");
-                                ui.add(egui::DragValue::new(cols).range(1..=200).speed(0.2));
-                                ui.label("×");
-                                ui.add(egui::DragValue::new(rows).range(1..=200).speed(0.2));
-                            });
-                            ui.add(egui::Slider::new(cell, 3.0..=40.0).text("cell size"));
-                            ui.checkbox(round, "round");
-                            ui.small(format!("{} cells", *cols * *rows));
-                        }
-                        Body::Ball {
-                            radius,
-                            density,
-                            restitution,
-                            friction,
-                            color,
-                        } => {
-                            ui.add(egui::Slider::new(radius, 1.0..=100.0).text("radius"));
-                            ui.add(
-                                egui::Slider::new(density, 0.001..=0.2)
-                                    .logarithmic(true)
-                                    .text("density"),
-                            );
-                            ui.add(egui::Slider::new(restitution, 0.0..=1.0).text("restitution"));
-                            ui.add(egui::Slider::new(friction, 0.0..=1.5).text("friction"));
-                            color_edit(ui, color);
-                        }
-                        Body::Wall {
-                            width,
-                            height,
-                            color,
-                        } => {
-                            ui.add(
-                                egui::DragValue::new(width)
-                                    .range(1.0..=10000.0)
-                                    .prefix("w "),
-                            );
-                            ui.add(
-                                egui::DragValue::new(height)
-                                    .range(1.0..=10000.0)
-                                    .prefix("h "),
-                            );
-                            color_edit(ui, color);
-                        }
-                    }
-
-                    if !matches!(element.body, Body::Wall { .. }) {
-                        ui.separator();
-                        ui.label("Pins");
-                        let pins: &mut Pins = &mut element.pins;
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut pins.left, "left");
-                            ui.checkbox(&mut pins.right, "right");
-                            ui.checkbox(&mut pins.top, "top");
-                            ui.checkbox(&mut pins.bottom, "bottom");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut pins.center, "center");
-                            ui.add(
-                                egui::DragValue::new(&mut pins.every)
-                                    .range(1..=100)
-                                    .prefix("every "),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("initial velocity");
-                            ui.add(egui::DragValue::new(&mut element.velocity.x).speed(5.0));
-                            ui.add(egui::DragValue::new(&mut element.velocity.y).speed(5.0));
-                        });
-                    }
-
-                    ui.separator();
-                    ui.label("Control");
-                    egui::ComboBox::from_label("owner")
-                        .selected_text(element.owner.map_or("nobody", Player::name))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut element.owner, None, "nobody");
-                            for player in [Player::One, Player::Two] {
-                                ui.selectable_value(
-                                    &mut element.owner,
-                                    Some(player),
-                                    player.name(),
-                                );
-                            }
-                        });
-                    ui.small("What an owned element hits counts as hit by its owner.");
-                    egui::ComboBox::from_label("input")
-                        .selected_text(element.control.name())
-                        .show_ui(ui, |ui| {
-                            for control in Control::ALL {
-                                ui.selectable_value(&mut element.control, control, control.name());
-                            }
-                        });
-                    if element.control != Control::None {
-                        egui::ComboBox::from_label("axis")
-                            .selected_text(element.axis.name())
-                            .show_ui(ui, |ui| {
-                                for axis in Axis::ALL {
-                                    ui.selectable_value(&mut element.axis, axis, axis.name());
-                                }
-                            });
-                        ui.add(
-                            egui::Slider::new(&mut element.speed, 50.0..=3000.0).text("max speed"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut element.range, 0.0..=2000.0)
-                                .text("range (0 = any)"),
-                        );
-                        if !matches!(element.body, Body::Wall { .. }) {
-                            ui.small(
-                                "Hangs from an invisible carrier by its pins (center if none).",
-                            );
-                        }
-                    }
-
-                    if !matches!(element.body, Body::Wall { .. }) {
-                        ui.separator();
-                        ui.label("Destruction");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut element.points)
-                                    .speed(10.0)
-                                    .prefix("points "),
-                            );
-                            egui::ComboBox::from_id_salt("credit")
-                                .selected_text(format!("to {}", element.credit.name()))
-                                .show_ui(ui, |ui| {
-                                    for credit in Credit::ALL {
-                                        ui.selectable_value(
-                                            &mut element.credit,
-                                            credit,
-                                            credit.name(),
-                                        );
-                                    }
-                                });
-                        });
-                        if matches!(element.body, Body::Lattice { .. }) {
-                            ui.add(
-                                egui::Slider::new(&mut element.destroyed_at, 0.0..=1.0)
-                                    .text("destroyed at bond loss"),
-                            );
-                        }
-                        ui.small(
-                            "Losing all pins or leaving the level bounds also counts as destroyed.",
-                        );
-                        ui.checkbox(&mut element.respawn, "respawn when destroyed");
-                        ui.add(
-                            egui::Slider::new(&mut element.keep_speed, 0.0..=3000.0)
-                                .text("keep speed"),
-                        );
-                        if element.keep_speed > 0.0 {
-                            ui.add(
-                                egui::Slider::new(&mut element.speed_ramp, 0.0..=200.0)
-                                    .text("speed ramp /s"),
-                            );
-                        }
-                        let mut bouncy = element.bounce.is_some();
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut bouncy, "bounce override").changed() {
-                                element.bounce = bouncy.then_some(1.0);
-                            }
-                            if let Some(bounce) = &mut element.bounce {
-                                ui.add(egui::Slider::new(bounce, 0.0..=1.0));
-                            }
-                        });
-                        let mut slippery = element.friction.is_some();
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut slippery, "friction override").changed() {
-                                element.friction = slippery.then_some(0.0);
-                            }
-                            if let Some(friction) = &mut element.friction {
-                                ui.add(egui::Slider::new(friction, 0.0..=1.5));
-                            }
-                        });
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Duplicate (Ctrl+D)").clicked() {
-                            action = Some("duplicate");
-                        }
-                        if ui.button("Delete (Del)").clicked() {
-                            action = Some("delete");
-                        }
-                    });
-                });
-        });
-
-    if element != level.elements[index] {
-        level.elements[index] = element;
-    }
-    match action {
-        Some("duplicate") => duplicate(&mut level, &mut editor),
-        Some("delete") => delete(&mut level, &mut editor),
-        _ => {}
-    }
-    Ok(())
 }

@@ -3,7 +3,7 @@
 A 2D physics sandbox and level editor where everything — walls, paddles, the ball — is built from
 small rigid cells held together by bonds that bend, yield and snap. Pong is one preset level.
 
-Built with Bevy 0.19, Avian 2D 0.7 and egui.
+Built with Bevy 0.19 (UI with Bevy Feathers) and Avian 2D 0.7.
 
 **Play in the browser:** [editor](https://barafael.github.io/demolition/) ·
 [straight into Pong](https://barafael.github.io/demolition/?level=pong&play)
@@ -27,7 +27,9 @@ cargo run --release -- --level pong --play   # straight into Pong
 Ctrl+Z / Ctrl+Shift+Z undo/redo, Tab to play. **Play:** R restart, C clear debris, B stress
 overlay, M slow-mo, Space pause, Tab back to the editor. Pong: WASD vs. arrow keys.
 
-Levels are saved as RON in `levels/`; "Share" in the editor copies a level as text.
+The sidebar's first entry, **World**, holds the level: name, save/load, presets, Copy/Paste
+(a level as RON text via the clipboard) and physics settings. The toolbar on the right tweaks
+the selected element. Levels are saved as RON in `levels/`.
 
 Headless tuning tools: `--probe` (materials × ammo matrix), `--pong`, `--diag [substeps]`, `--bench`.
 
