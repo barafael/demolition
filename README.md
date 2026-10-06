@@ -5,6 +5,9 @@ small rigid cells held together by bonds that bend, yield and snap. Pong is one 
 
 Built with Bevy 0.19, Avian 2D 0.7 and egui.
 
+**Play in the browser:** [editor](https://barafael.github.io/demolition/) ·
+[straight into Pong](https://barafael.github.io/demolition/?level=pong&play)
+
 ## How destruction works
 
 Each destructible element is a grid of cells joined by compliant fixed joints; elements are fixed
