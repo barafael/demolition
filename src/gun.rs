@@ -223,6 +223,7 @@ pub fn fire(commands: &mut Commands, materials: &Materials, anchor: Entity, gun:
                 cols: n,
                 rows: n,
                 cell,
+                strain_length: cell,
                 material,
                 velocity,
                 round: true,

@@ -253,7 +253,7 @@ fn enter_play(
     breaks.0.clear();
     respawns.0.clear();
     for (index, element) in level.elements.iter().enumerate() {
-        spawn_element(&mut commands, &materials, anchor.0, element, index);
+        spawn_element(&mut commands, &materials, anchor.0, element, index, level.resolution);
     }
 }
 
@@ -287,7 +287,7 @@ fn restart(
     *score = Score::default();
     respawns.0.clear();
     for (index, element) in level.elements.iter().enumerate() {
-        spawn_element(&mut commands, &materials, anchor.0, element, index);
+        spawn_element(&mut commands, &materials, anchor.0, element, index, level.resolution);
     }
 }
 
@@ -297,6 +297,7 @@ pub fn spawn_element(
     world_anchor: Entity,
     element: &Element,
     index: usize,
+    resolution: f32,
 ) -> Entity {
     let root = commands
         .spawn((
@@ -422,7 +423,7 @@ pub fn spawn_element(
             }
         }
         Body::Lattice { .. } => {
-            let spec = lattice_spec(element).expect("lattice body");
+            let spec = lattice_spec(element, resolution).expect("lattice body");
             let (bonds, pins) = spawn_lattice(commands, materials, anchor.0, anchor.1, &spec, root);
             if element.keep_speed > 0.0 {
                 commands.entity(root).insert(TrackContacts);
@@ -439,8 +440,13 @@ pub fn spawn_element(
     root
 }
 
-/// The lattice layout of a lattice element, pins included.
-pub fn lattice_spec(element: &Element) -> Option<LatticeSpec> {
+/// The lattice layout of a lattice element at the level's physics resolution, pins included.
+pub fn lattice_spec(element: &Element, resolution: f32) -> Option<LatticeSpec> {
+    let strain_length = match element.body {
+        Body::Lattice { cell, .. } => cell.max(1.0),
+        _ => return None,
+    };
+    let element = &element.at_resolution(resolution);
     let Body::Lattice {
         material,
         cols,
@@ -456,7 +462,8 @@ pub fn lattice_spec(element: &Element) -> Option<LatticeSpec> {
         angle: element.angle,
         cols: cols.max(1),
         rows: rows.max(1),
-        cell: cell.max(1.0),
+        cell: cell.max(0.1),
+        strain_length,
         material,
         velocity: element.velocity,
         round,
@@ -678,7 +685,14 @@ fn respawn(
             return true;
         }
         if let Some(element) = level.elements.get(*index) {
-            spawn_element(&mut commands, &materials, anchor.0, element, *index);
+            spawn_element(
+                &mut commands,
+                &materials,
+                anchor.0,
+                element,
+                *index,
+                level.resolution,
+            );
         }
         false
     });

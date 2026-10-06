@@ -28,7 +28,25 @@ use crate::play::{ElementRoot, Mode, Score};
 
 const HZ: f64 = 64.0;
 
-fn make_app(level: Level) -> App {
+/// `--resolution X` on the command line overrides every probed level's physics resolution.
+fn resolution_override() -> Option<f32> {
+    let args: Vec<String> = std::env::args().collect();
+    let i = args.iter().position(|a| a == "--resolution")?;
+    args.get(i + 1)?.parse().ok()
+}
+
+fn make_app(mut level: Level) -> App {
+    if let Some(r) = resolution_override() {
+        level.resolution = r;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(n) = args
+        .iter()
+        .position(|a| a == "--substeps")
+        .and_then(|i| args.get(i + 1)?.parse().ok())
+    {
+        level.substeps = n;
+    }
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,

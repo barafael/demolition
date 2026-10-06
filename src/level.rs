@@ -273,6 +273,23 @@ impl Element {
         }
     }
 
+    /// This element with its lattice divided `resolution` times as finely: same outline, more
+    /// and smaller cells, pin spacing scaled to match. Other bodies are unchanged.
+    pub fn at_resolution(&self, resolution: f32) -> Element {
+        let mut scaled = self.clone();
+        let r = resolution.clamp(0.1, 10.0);
+        if let Body::Lattice {
+            cols, rows, cell, ..
+        } = &mut scaled.body
+        {
+            *cols = ((*cols as f32 * r).round() as i32).max(1);
+            *rows = ((*rows as f32 * r).round() as i32).max(1);
+            *cell /= r;
+            scaled.pins.every = ((scaled.pins.every as f32 * r).round() as u32).max(1);
+        }
+        scaled
+    }
+
     /// Pins as (col, row, offset within the cell), for lattices.
     pub fn lattice_pins(&self, has_cell: impl Fn(i32, i32) -> bool) -> Vec<(i32, i32, Vec2)> {
         let Body::Lattice {
@@ -338,6 +355,9 @@ pub struct Level {
     /// Downward acceleration in px/s².
     pub gravity: f32,
     pub substeps: u32,
+    /// Multiplies how finely every lattice is divided into cells (2 = twice as many per side, so
+    /// four times the cells). Finer lattices break more locally but cost more to simulate.
+    pub resolution: f32,
     /// Minimum visible world area.
     pub view: Vec2,
     /// Half extents of the playable area; anything leaving it is removed.
@@ -355,6 +375,7 @@ impl Default for Level {
             name: "untitled".into(),
             gravity: 900.0,
             substeps: 32,
+            resolution: 1.0,
             view: Vec2::new(1700.0, 950.0),
             bounds: Vec2::new(3000.0, 2000.0),
             gun: true,

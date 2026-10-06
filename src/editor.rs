@@ -589,7 +589,7 @@ fn draw_edit_gizmos(mut gizmos: Gizmos, level: Res<Level>, editor: Res<Editor>) 
         }
 
         let pin_color = Color::srgb(0.3, 1.0, 0.4);
-        if let Some(spec) = lattice_spec(element) {
+        if let Some(spec) = lattice_spec(element, level.resolution) {
             if !spec.round && (selected || spec.cols * spec.rows <= 400) {
                 gizmos.grid_2d(
                     pose,

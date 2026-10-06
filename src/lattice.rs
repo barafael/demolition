@@ -93,6 +93,11 @@ pub struct LatticeSpec {
     pub cols: i32,
     pub rows: i32,
     pub cell: f32,
+    /// Length that bond strain is measured against: the element's own cell size, even when the
+    /// level's physics resolution divides it into smaller cells. Measured against the small
+    /// cells, the same physical movement would count as more strain, and finer lattices would
+    /// be weaker; this keeps materials equally strong at every resolution.
+    pub strain_length: f32,
     pub material: MaterialKind,
     pub velocity: Vec2,
     /// Only keep the cells inside the inscribed ellipse.
@@ -218,7 +223,7 @@ pub fn spawn_lattice(
                     JointCollisionDisabled,
                     Bond {
                         material: Some(spec.material),
-                        cell_size: spec.cell,
+                        cell_size: spec.strain_length,
                         damage: 0.0,
                         strain: 0.0,
                     },
@@ -244,7 +249,7 @@ pub fn spawn_lattice(
             cell,
             Isometry2d::new(world, rotation),
             pin.offset,
-            spec.cell,
+            spec.strain_length,
             group,
         );
     }
