@@ -4,11 +4,14 @@
 //!   nothing breaks. (2) Every ammo type is fired at every structure. (3) Pong runs unattended.
 //! - `--diag [substeps]`: peak strain from gravity alone, with yielding and breaking disabled.
 //! - `--pong`: just the unattended Pong run.
-//! - `--bench`: wall-clock cost of a physics step.
+//! - `--rest`: resting speeds per structure (what keeps them from sleeping).
+//! - `--bench`: cost of a physics step, by phase.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use avian2d::collision::CollisionDiagnostics;
+use avian2d::dynamics::solver::SolverDiagnostics;
 use avian2d::prelude::*;
 use bevy::input::InputPlugin;
 use bevy::prelude::*;
@@ -429,25 +432,155 @@ pub fn diag() {
     }
 }
 
-pub fn bench() {
-    for (name, level) in [("lab", level::preset_lab()), ("pong", level::preset_pong())] {
-        for substeps in [16, 32] {
-            let mut level = level.clone();
-            level.substeps = substeps;
-            let mut app = make_app(level);
-            step(&mut app, 0.25);
-            let start = std::time::Instant::now();
-            let n = 128;
-            for _ in 0..n {
-                app.update();
-            }
-            let ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
-            let bodies = app
-                .world_mut()
-                .query::<&RigidBody>()
-                .iter(app.world())
-                .count();
-            println!("{name} substeps {substeps:>2}: {ms:.2} ms/step ({bodies} bodies)");
+/// CPU time (user + system) this process has used, in seconds. Unlike wall time it barely
+/// changes when other programs compete for the CPU, so benchmark comparisons stay meaningful.
+/// Linux only; `None` elsewhere.
+fn process_cpu_seconds() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // Fields after the parenthesised command name; utime and stime are the 12th and 13th.
+    let rest = stat.rsplit_once(')')?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
+    Some(ticks / 100.0)
+}
+
+/// Physics step cost for each preset, after settling, and for the Lab after a barrage of
+/// cannonballs has filled it with debris. Also reports the number of contact pairs the
+/// narrow phase tracks, since that is what debris piles inflate.
+/// `--rest`: how still each Lab structure is after settling for 3 s. Structures that keep
+/// moving never sleep, so this shows where simulation time goes on nothing visible.
+pub fn rest_speeds() {
+    let level = level::preset_lab();
+    let mut app = make_app(level.clone());
+    step(&mut app, 3.0);
+    let world = app.world_mut();
+    let roots = root_indices(world);
+    let mut out: HashMap<usize, Vec<(f32, f32, Vec2, u8)>> = HashMap::new();
+    for (v, w, p, g, c) in world
+        .query::<(&LinearVelocity, &AngularVelocity, &Position, &Group, &Cell)>()
+        .iter(world)
+    {
+        if let Some(&i) = roots.get(&g.0) {
+            out.entry(i)
+                .or_default()
+                .push((v.length(), w.0.abs(), p.0, c.bonds));
         }
+    }
+    for (i, mut cells) in out {
+        cells.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let n = cells.len();
+        let mean = cells.iter().map(|c| c.0).sum::<f32>() / n as f32;
+        let fast = cells.iter().filter(|c| c.0 > 1.0).count();
+        let top: Vec<String> = cells
+            .iter()
+            .take(3)
+            .map(|c| format!("{:.0}px/s@({:.0},{:.0}) bonds {}", c.0, c.2.x, c.2.y, c.3))
+            .collect();
+        println!(
+            "{:<14} {n} cells, mean {mean:.2} px/s, {fast} above 1 px/s; fastest: {}",
+            level.elements[i].name,
+            top.join(", ")
+        );
+    }
+}
+
+pub fn bench() {
+    let barrage = |app: &mut App| {
+        let world = app.world_mut();
+        let materials = world.resource::<Materials>().clone();
+        let anchor = world.resource::<WorldAnchor>().0;
+        for k in 0..12 {
+            let from = Vec2::new(-700.0, -330.0 + 40.0 * (k % 4) as f32);
+            let to = Vec2::new(
+                -200.0 + 120.0 * (k % 6) as f32,
+                -150.0 + 60.0 * (k / 6) as f32,
+            );
+            let gun = Gun {
+                pos: from,
+                dir: aim_at(from, to, 1400.0, 900.0),
+                ammo: Ammo::Cannonball,
+                speed: 1400.0,
+                ..default()
+            };
+            fire(&mut world.commands(), &materials, anchor, &gun);
+        }
+        world.flush();
+    };
+    let cases: [(&str, Level, bool); 3] = [
+        ("lab", level::preset_lab(), false),
+        ("lab + debris", level::preset_lab(), true),
+        ("pong", level::preset_pong(), false),
+    ];
+    for (name, level, debris) in cases {
+        let mut app = make_app(level);
+        step(&mut app, 0.5);
+        if debris {
+            barrage(&mut app);
+            step(&mut app, 0.5);
+            barrage(&mut app);
+        }
+        step(&mut app, 2.5);
+        let phases = |world: &World| {
+            let c = world.get_resource::<CollisionDiagnostics>();
+            let s = world.get_resource::<SolverDiagnostics>();
+            [
+                c.map(|c| c.broad_phase),
+                c.map(|c| c.narrow_phase),
+                s.map(|s| {
+                    s.prepare_constraints
+                        + s.update_velocity_increments
+                        + s.integrate_velocities
+                        + s.warm_start
+                        + s.solve_constraints
+                        + s.integrate_positions
+                        + s.relax_velocities
+                        + s.apply_restitution
+                        + s.finalize
+                        + s.store_impulses
+                        + s.swept_ccd
+                }),
+            ]
+            .map(|d| d.unwrap_or_default().as_secs_f64())
+        };
+        let start = std::time::Instant::now();
+        let cpu_start = process_cpu_seconds();
+        let n = 256;
+        // The diagnostics are reset every frame, so sum them frame by frame.
+        let mut phase_sum = [0.0f64; 3];
+        for _ in 0..n {
+            app.update();
+            for (sum, d) in phase_sum.iter_mut().zip(phases(app.world())) {
+                *sum += d;
+            }
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        let cpu_ms = process_cpu_seconds()
+            .zip(cpu_start)
+            .map_or(f64::NAN, |(end, start)| (end - start) * 1000.0 / n as f64);
+        let [broad, narrow, solver] = phase_sum.map(|d| d * 1000.0 / n as f64);
+        let world = app.world_mut();
+        let bodies = world.query::<&RigidBody>().iter(world).count();
+        let sleeping = world
+            .query_filtered::<(), With<Sleeping>>()
+            .iter(world)
+            .count();
+        let graph = world.resource::<ContactGraph>();
+        let pairs = graph.active_pairs().len();
+        let touching = graph.iter_active_touching().count();
+        // Same frames with physics paused: what our own systems and Bevy's schedule cost.
+        app.world_mut().resource_mut::<Time<Physics>>().pause();
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            app.update();
+        }
+        let idle_ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+        println!("{name:<14} frame without physics: {idle_ms:.2} ms");
+        println!(
+            "{name:<14} {ms:5.2} ms/step wall {cpu_ms:5.2} CPU | broad {broad:4.2} narrow {narrow:4.2} \
+             contact solver {solver:4.2} rest {:4.2} | {bodies} bodies ({sleeping} asleep), \
+             {pairs} pairs ({touching} touching)",
+            ms - broad - narrow - solver
+        );
     }
 }

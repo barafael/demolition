@@ -10,11 +10,11 @@ use bevy::ui_widgets::ScrollArea;
 
 use super::bind::{ElementField as E, Field};
 use super::widgets::{
-    Item, button, caption, checkbox, choice, column, number, row, slider, text_input,
+    Item, button, caption, checkbox, choice, column, number, row, show_when, slider, text_input,
 };
 use super::{Act, Action, Dyn, OnlyIn};
 use crate::editor::Editor;
-use crate::level::{Body, Control, Element, Level};
+use crate::level::{Body, Element, Level};
 use crate::play::Mode;
 
 /// The part of the toolbar that collapses.
@@ -150,18 +150,17 @@ fn rows(element: &Element) -> Vec<Item> {
         "What an owned element hits counts as hit by its owner.",
     ));
     items.push(choice("Input", f(E::Control)));
-    if element.control != Control::None {
-        items.extend([
-            choice("Axis", f(E::Axis)),
-            slider("Max speed", f(E::Speed), 50.0, 3000.0, 0),
-            slider("Range (0 = any)", f(E::Range), 0.0, 2000.0, 0),
-        ]);
-        if !wall {
-            items.push(caption(
-                "Hangs from an invisible carrier by its pins (center if none).",
-            ));
-        }
+    let mut controlled = vec![
+        choice("Axis", f(E::Axis)),
+        slider("Max speed", f(E::Speed), 50.0, 3000.0, 0),
+        slider("Range (0 = any)", f(E::Range), 0.0, 2000.0, 0),
+    ];
+    if !wall {
+        controlled.push(caption(
+            "Hangs from an invisible carrier by its pins (center if none).",
+        ));
     }
+    items.push(show_when(f(E::Control), controlled));
 
     if !wall {
         items.push(heading("Destruction"));
@@ -183,17 +182,22 @@ fn rows(element: &Element) -> Vec<Item> {
             checkbox("Respawn when destroyed", f(E::Respawn)),
             slider("Keep speed", f(E::KeepSpeed), 0.0, 3000.0, 0),
         ]);
-        if element.keep_speed > 0.0 {
-            items.push(slider("Speed ramp /s", f(E::SpeedRamp), 0.0, 200.0, 0));
-        }
-        items.push(checkbox("Bounce override", f(E::BounceOverride)));
-        if element.bounce.is_some() {
-            items.push(slider("Bounce", f(E::Bounce), 0.0, 1.0, 2));
-        }
-        items.push(checkbox("Friction override", f(E::FrictionOverride)));
-        if element.friction.is_some() {
-            items.push(slider("Friction", f(E::FrictionValue), 0.0, 1.5, 2));
-        }
+        items.extend([
+            show_when(
+                f(E::KeepSpeed),
+                vec![slider("Speed ramp /s", f(E::SpeedRamp), 0.0, 200.0, 0)],
+            ),
+            checkbox("Bounce override", f(E::BounceOverride)),
+            show_when(
+                f(E::BounceOverride),
+                vec![slider("Bounce", f(E::Bounce), 0.0, 1.0, 2)],
+            ),
+            checkbox("Friction override", f(E::FrictionOverride)),
+            show_when(
+                f(E::FrictionOverride),
+                vec![slider("Friction", f(E::FrictionValue), 0.0, 1.5, 2)],
+            ),
+        ]);
     }
 
     items.push(row(vec![
@@ -203,15 +207,13 @@ fn rows(element: &Element) -> Vec<Item> {
     items
 }
 
-/// What decides which rows the inspector has; values are synced separately.
+/// What decides which rows the inspector has. Values are synced by the bindings, and rows that
+/// depend on other values are shown and hidden with `ShowWhen`, so editing never rebuilds the
+/// inspector under the user's pointer.
 #[derive(PartialEq, Clone)]
 pub struct Layout {
     selected: Option<usize>,
     kind: &'static str,
-    controlled: bool,
-    keep_speed: bool,
-    bounce: bool,
-    friction: bool,
 }
 
 pub fn rebuild(
@@ -225,10 +227,6 @@ pub fn rebuild(
     let layout = Layout {
         selected: element.and(editor.selected),
         kind: element.map_or("", |e| e.body.kind_name()),
-        controlled: element.is_some_and(|e| e.control != Control::None),
-        keep_speed: element.is_some_and(|e| e.keep_speed > 0.0),
-        bounce: element.is_some_and(|e| e.bounce.is_some()),
-        friction: element.is_some_and(|e| e.friction.is_some()),
     };
     let Ok((container, children)) = body.single() else {
         return;

@@ -9,7 +9,8 @@ use bevy::ui_widgets::ScrollArea;
 
 use super::bind::{Field, MatParam};
 use super::widgets::{
-    Item, button, caption, checkbox, choice, column, number, row, section, slider, text_input,
+    Item, button, caption, checkbox, choice, column, number, row, section, show_when, slider,
+    text_input,
 };
 use super::{Action, Dyn, LevelFiles, OnlyIn, Section, row_variant};
 use crate::editor::Editor;
@@ -150,6 +151,11 @@ fn materials_section() -> Item {
         Section::Material(None),
         material_params(None),
     ));
+    body.push(button(
+        "Reset materials",
+        Action::ResetMaterials,
+        ButtonVariant::Normal,
+    ));
     section("Materials", Section::Materials, body)
 }
 
@@ -200,20 +206,24 @@ pub fn spawn(mut commands: Commands) {
                         ButtonVariant::Normal,
                     ),
                 ]),
-                section(
-                    "Gun",
-                    Section::Gun,
-                    vec![
-                        choice("Ammo", Field::Ammo),
-                        slider("Muzzle speed px/s", Field::GunSpeed, 50.0, 6000.0, 0),
-                        slider(
-                            "Auto-fire per second (0 = off)",
-                            Field::AutoFire,
-                            0.0,
-                            30.0,
-                            1,
-                        ),
-                    ],
+                // Only for levels that have a gun.
+                show_when(
+                    Field::GunEnabled,
+                    vec![section(
+                        "Gun",
+                        Section::Gun,
+                        vec![
+                            choice("Ammo", Field::Ammo),
+                            slider("Muzzle speed px/s", Field::GunSpeed, 50.0, 6000.0, 0),
+                            slider(
+                                "Auto-fire per second (0 = off)",
+                                Field::AutoFire,
+                                0.0,
+                                30.0,
+                                1,
+                            ),
+                        ],
+                    )],
                 ),
                 section(
                     "View",
@@ -305,6 +315,10 @@ pub fn rebuild_lists(
     mut shown: Local<Option<(Vec<String>, Option<usize>)>>,
     mut shown_files: Local<Option<Vec<String>>>,
 ) {
+    let changed = level.is_changed() || editor.is_changed() || files.is_changed();
+    if !changed && shown.is_some() && shown_files.is_some() {
+        return;
+    }
     let rows: Vec<String> = level
         .elements
         .iter()

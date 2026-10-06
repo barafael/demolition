@@ -112,6 +112,9 @@ fn main() {
     if arg("--probe") {
         return probe::run();
     }
+    if arg("--rest") {
+        return probe::rest_speeds();
+    }
     if arg("--pong") {
         return probe::pong();
     }

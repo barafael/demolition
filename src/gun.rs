@@ -204,6 +204,7 @@ pub fn fire(commands: &mut Commands, materials: &Materials, anchor: Entity, gun:
                 round: true,
                 pins: vec![],
                 ccd: true,
+                can_sleep: true,
                 bounce: None,
                 friction: None,
             };

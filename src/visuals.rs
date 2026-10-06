@@ -12,7 +12,7 @@ use crate::lattice::{Bond, Cell, WorldAnchor};
 use crate::level::Level;
 use crate::materials::Materials;
 use crate::play::{ClearDebris, CursorWorld, Mode, Restart};
-use crate::ui::{pointer_over_ui, typing};
+use crate::ui::{keyboard_captured, world_pointer};
 
 pub struct VisualsPlugin;
 
@@ -41,10 +41,10 @@ impl Plugin for VisualsPlugin {
             .add_systems(
                 Update,
                 (
-                    toggle_mode.run_if(not(typing)),
+                    toggle_mode.run_if(not(keyboard_captured)),
                     (
-                        aim_and_fire.run_if(not(pointer_over_ui)),
-                        play_hotkeys.run_if(not(typing)),
+                        aim_and_fire.run_if(world_pointer),
+                        play_hotkeys.run_if(not(keyboard_captured)),
                         draw_gun,
                     )
                         .run_if(in_state(Mode::Play)),
@@ -252,7 +252,15 @@ fn tint_cells(materials: Res<Materials>, mut cells: Query<(&Cell, &mut Sprite)>)
     let cracked = Color::srgb(0.25, 0.05, 0.05);
     for (cell, mut sprite) in &mut cells {
         let base = materials.get(cell.material).color;
-        sprite.color = base.mix(&cracked, cell.damage.clamp(0.0, 1.0) * 0.85);
+        // Debris fades out over its last two seconds.
+        let fade = ((crate::play::DEBRIS_LIFETIME - cell.loose_for) / 2.0).clamp(0.0, 1.0);
+        let color = base
+            .mix(&cracked, cell.damage.clamp(0.0, 1.0) * 0.85)
+            .with_alpha(fade);
+        // Only write on change, so unchanged sprites aren't flagged as modified.
+        if sprite.color != color {
+            sprite.color = color;
+        }
     }
 }
 

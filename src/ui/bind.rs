@@ -124,6 +124,21 @@ impl Field {
         }
     }
 
+    /// The name of option `index`, without building the whole list.
+    pub fn choice_name(self, index: usize) -> Option<&'static str> {
+        use ElementField as E;
+        match self {
+            Field::Ammo => Ammo::ALL.get(index).map(|a| a.name()),
+            Field::Element(E::Kind) => KINDS.get(index).copied(),
+            Field::Element(E::Material) => MaterialKind::ALL.get(index).map(|m| m.name()),
+            Field::Element(E::Control) => Control::ALL.get(index).map(|c| c.name()),
+            Field::Element(E::Axis) => Axis::ALL.get(index).map(|a| a.name()),
+            Field::Element(E::Owner) => ["nobody", "P1", "P2"].get(index).copied(),
+            Field::Element(E::Credit) => Credit::ALL.get(index).map(|c| c.name()),
+            _ => None,
+        }
+    }
+
     /// Compliances span many orders of magnitude, so their sliders edit log10 of the value.
     pub fn is_log(self) -> bool {
         matches!(
@@ -155,6 +170,10 @@ pub struct ChoiceItem {
     pub field: Field,
     pub index: usize,
 }
+
+/// Shows the node only while `field` is on: true, non-zero, or a choice other than the first.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ShowWhen(pub Field);
 
 /// The value last pushed into a number input, so it is only updated when the model changes.
 #[derive(Component, Clone, Copy, Default)]
@@ -452,12 +471,33 @@ fn from_widget(field: Field, value: f32) -> f32 {
 }
 
 /// Slider or number input edited.
-pub fn on_f32_change(change: On<ValueChange<f32>>, binds: Query<&Bind>, mut model: Model) {
+pub fn on_f32_change(
+    change: On<ValueChange<f32>>,
+    binds: Query<&Bind>,
+    mut shown: Query<&mut Shown>,
+    focus: Res<InputFocus>,
+    parents: Query<&ChildOf>,
+    mut model: Model,
+) {
     let Ok(&Bind(field)) = binds.get(change.source) else {
         return;
     };
-    // Number inputs report every keystroke; applying them live is fine since the sync skips
-    // the input being typed in.
+    if let Ok(mut shown) = shown.get_mut(change.source) {
+        // A number input. It also reports the values `sync_widgets` pushes into it, which may
+        // be stale by the time they arrive, so only keystrokes in its own (focused) text field
+        // and the final value of an edit count.
+        let typing_here = focus
+            .get()
+            .and_then(|f| parents.get(f).ok())
+            .is_some_and(|parent| parent.parent() == change.source);
+        if !typing_here && !change.is_final {
+            return;
+        }
+        if change.is_final {
+            // Re-sync after the edit, so a clamped or rejected entry shows the real value.
+            shown.0 = None;
+        }
+    }
     let value = from_widget(field, change.value);
     model.set(field, Value::F(value));
 }
@@ -553,8 +593,8 @@ pub fn sync_widgets(
     }
     for (&Bind(field), mut text) in &mut captions {
         if let Some(Value::C(i)) = model.get(field)
-            && let Some(name) = field.choices().get(i)
-            && text.0 != *name
+            && let Some(name) = field.choice_name(i)
+            && text.0 != name
         {
             text.0 = name.to_string();
         }
@@ -562,10 +602,28 @@ pub fn sync_widgets(
     for (entity, &Bind(field), mut editable) in &mut texts {
         if let Some(Value::S(s)) = model.get(field)
             && focus.get() != Some(entity)
-            && editable.value().to_string() != s
+            && editable.value() != s.as_str()
         {
             editable.queue_edit(TextEdit::SelectAll);
             editable.queue_edit(TextEdit::Insert(s.into()));
+        }
+    }
+}
+
+/// Shows or hides `ShowWhen` nodes. Hiding rather than rebuilding keeps a slider alive while it
+/// is being dragged across the value that toggles its neighbours.
+pub fn show_when(mut model: Model, mut nodes: Query<(&ShowWhen, &mut Node)>) {
+    for (&ShowWhen(field), mut node) in &mut nodes {
+        let on = match model.get(field) {
+            Some(Value::B(b)) => b,
+            Some(Value::F(x)) => x > 0.0,
+            Some(Value::C(i)) => i > 0,
+            Some(Value::S(s)) => !s.is_empty(),
+            None => false,
+        };
+        let display = if on { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
         }
     }
 }

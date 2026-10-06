@@ -138,6 +138,8 @@ pub struct Restart(pub bool);
 struct Respawns(Vec<(usize, f32)>);
 
 const RESPAWN_DELAY: f32 = 1.5;
+/// Loose debris is removed after this long, so long sessions don't slow down as it piles up.
+pub const DEBRIS_LIFETIME: f32 = 20.0;
 
 pub struct PlayPlugin;
 
@@ -156,6 +158,7 @@ impl Plugin for PlayPlugin {
             .add_systems(
                 Update,
                 (
+                    apply_world_settings,
                     restart,
                     clear_debris,
                     equip_members,
@@ -164,6 +167,7 @@ impl Plugin for PlayPlugin {
                     keep_speed,
                     track_elements,
                     respawn,
+                    age_debris,
                     cull_out_of_bounds,
                 )
                     .chain()
@@ -176,6 +180,26 @@ impl Plugin for PlayPlugin {
 fn sync_level_materials(level: Res<Level>, mut materials: ResMut<Materials>) {
     if level.is_changed() && level.materials != *materials {
         *materials = level.materials.clone();
+    }
+}
+
+/// Gravity and substeps follow the level while playing, so World settings apply live. Only
+/// written when they differ: changing gravity wakes every sleeping body.
+fn apply_world_settings(
+    level: Res<Level>,
+    mut gravity: ResMut<Gravity>,
+    mut substeps: ResMut<SubstepCount>,
+) {
+    if !level.is_changed() {
+        return;
+    }
+    let g = Vec2::NEG_Y * level.gravity;
+    if gravity.0 != g {
+        gravity.0 = g;
+    }
+    let n = level.substeps.max(1);
+    if substeps.0 != n {
+        substeps.0 = n;
     }
 }
 
@@ -344,6 +368,9 @@ pub fn spawn_element(
                     group,
                 ))
                 .id();
+            if driven.is_some() || element.keep_speed > 0.0 {
+                commands.entity(ball).insert(SleepingDisabled);
+            }
             if element.pins.any() || driven.is_some() {
                 commands.entity(root).insert(ElementRoot {
                     index,
@@ -406,6 +433,7 @@ pub fn lattice_spec(element: &Element) -> Option<LatticeSpec> {
         round,
         pins: vec![],
         ccd: element.velocity != Vec2::ZERO || element.keep_speed > 0.0,
+        can_sleep: element.control == Control::None && element.keep_speed == 0.0,
         bounce: element.bounce,
         friction: element.friction,
     };
@@ -625,6 +653,23 @@ fn respawn(
         }
         false
     });
+}
+
+/// Cells that lost all their bonds are debris: they fade out (see visuals) and are removed after
+/// `DEBRIS_LIFETIME`. Cells that never had bonds (single-cell elements) are left alone.
+fn age_debris(mut commands: Commands, time: Res<Time>, mut cells: Query<(Entity, &mut Cell)>) {
+    let dt = time.delta_secs();
+    for (entity, mut cell) in &mut cells {
+        if cell.bonds > 0 {
+            cell.was_bonded = true;
+            cell.loose_for = 0.0;
+        } else if cell.was_bonded {
+            cell.loose_for += dt;
+            if cell.loose_for > DEBRIS_LIFETIME {
+                commands.entity(entity).insert(Doomed);
+            }
+        }
+    }
 }
 
 fn cull_out_of_bounds(

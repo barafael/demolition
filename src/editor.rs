@@ -9,7 +9,7 @@ use bevy::sprite::Anchor;
 use crate::level::{Axis, Body, Control, Element, Level};
 use crate::materials::Materials;
 use crate::play::{CursorWorld, Mode, lattice_spec};
-use crate::ui::{pointer_over_ui, typing};
+use crate::ui::{keyboard_captured, world_pointer};
 use crate::visuals::WorldCamera;
 
 pub struct EditorPlugin;
@@ -41,6 +41,8 @@ pub struct History {
     undo: Vec<Level>,
     redo: Vec<Level>,
     committed: Option<Level>,
+    /// The level changed since the last commit check; comparing is skipped otherwise.
+    dirty: bool,
     pub request: Option<HistoryStep>,
 }
 
@@ -84,17 +86,16 @@ fn history(
         }
         return;
     }
+    history.dirty |= level.is_changed();
+    let released = !mouse.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle]);
+    if history.committed.is_some() && !(history.dirty && released) {
+        return;
+    }
+    history.dirty = false;
     let current = level.bypass_change_detection();
     match &history.committed {
         None => history.committed = Some(current.clone()),
-        Some(committed)
-            if committed != current
-                && !mouse.any_pressed([
-                    MouseButton::Left,
-                    MouseButton::Right,
-                    MouseButton::Middle,
-                ]) =>
-        {
+        Some(committed) if committed != current => {
             let previous = history.committed.replace(current.clone()).unwrap();
             history.undo.push(previous);
             if history.undo.len() > HISTORY_LIMIT {
@@ -111,8 +112,16 @@ enum Drag {
     Gun { offset: Vec2 },
 }
 
+/// A filled shape standing in for element `.0` in the editor.
 #[derive(Component)]
-struct Preview;
+struct Preview(usize);
+
+/// The label above element `.0`.
+#[derive(Component)]
+struct PreviewLabel(usize);
+
+/// Label font size in screen pixels; labels are scaled with the zoom to keep it.
+const LABEL_SIZE: f32 = 11.0;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
@@ -124,11 +133,12 @@ impl Plugin for EditorPlugin {
                 Update,
                 (
                     (
-                        edit_pointer.run_if(not(pointer_over_ui)),
-                        edit_keys.run_if(not(typing)),
-                        camera_controls.run_if(not(pointer_over_ui)),
+                        edit_pointer.run_if(world_pointer),
+                        edit_keys.run_if(not(keyboard_captured)),
+                        camera_controls.run_if(world_pointer),
                         history,
-                        rebuild_previews,
+                        sync_previews,
+                        scale_labels,
                         draw_edit_gizmos,
                     )
                         .chain()
@@ -166,70 +176,137 @@ fn sync_view(level: Res<Level>, mut projections: Query<&mut Projection, With<Wor
     }
 }
 
-fn despawn_previews(mut commands: Commands, previews: Query<Entity, With<Preview>>) {
+fn despawn_previews(
+    mut commands: Commands,
+    previews: Query<Entity, Or<(With<Preview>, With<PreviewLabel>)>>,
+) {
     for entity in &previews {
         commands.entity(entity).despawn();
     }
 }
 
-/// Filled shapes for every element, rebuilt whenever the level changes.
-fn rebuild_previews(
+fn preview_color(element: &Element, materials: &Materials) -> Color {
+    match &element.body {
+        Body::Lattice { material, .. } => materials.get(*material).color,
+        Body::Ball { color, .. } | Body::Wall { color, .. } => Color::srgb_from_array(*color),
+    }
+}
+
+fn preview_transform(index: usize, element: &Element) -> Transform {
+    let z = match element.body {
+        Body::Wall { .. } => -1.0,
+        _ => index as f32 * 0.001,
+    };
+    Transform::from_translation(element.pos.extend(z))
+        .with_rotation(Quat::from_rotation_z(element.angle))
+}
+
+fn label_position(element: &Element) -> Vec3 {
+    (element.pos + Vec2::Y * (element.size().y * 0.5 + 4.0)).extend(5.0)
+}
+
+/// Shapes and labels for every element. Dragging or renaming only moves or relabels them; they
+/// are respawned only when what they look like changes (bodies, materials, element count).
+fn sync_previews(
     mut commands: Commands,
     level: Res<Level>,
+    editor: Res<Editor>,
     materials: Res<Materials>,
-    previews: Query<Entity, With<Preview>>,
+    mut shapes: Query<(&Preview, &mut Transform), Without<PreviewLabel>>,
+    mut labels: Query<(&PreviewLabel, &mut Transform, &mut Text2d), Without<Preview>>,
+    existing: Query<Entity, Or<(With<Preview>, With<PreviewLabel>)>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut color_materials: ResMut<Assets<ColorMaterial>>,
+    mut drawn: Local<Option<(Vec<Body>, Materials)>>,
 ) {
-    if !level.is_changed() && !materials.is_changed() && !previews.is_empty() {
+    let fresh = existing.is_empty() && !level.elements.is_empty();
+    if !fresh && !level.is_changed() && !materials.is_changed() && !editor.is_changed() {
         return;
     }
-    for entity in &previews {
+    let bodies: Vec<Body> = level.elements.iter().map(|e| e.body.clone()).collect();
+    let same_look = drawn
+        .as_ref()
+        .is_some_and(|(b, m)| *b == bodies && *m == *materials);
+
+    if same_look && !fresh {
+        for (preview, mut transform) in &mut shapes {
+            if let Some(element) = level.elements.get(preview.0) {
+                let target = preview_transform(preview.0, element);
+                if *transform != target {
+                    *transform = target;
+                }
+            }
+        }
+        for (label, mut transform, mut text) in &mut labels {
+            let Some(element) = level.elements.get(label.0) else {
+                continue;
+            };
+            let position = label_position(element);
+            if transform.translation != position {
+                transform.translation = position;
+            }
+            let tags = tags(element, editor.selected == Some(label.0)).unwrap_or_default();
+            if text.0 != tags {
+                text.0 = tags;
+            }
+        }
+        return;
+    }
+
+    for entity in &existing {
         commands.entity(entity).despawn();
     }
     for (index, element) in level.elements.iter().enumerate() {
         let size = element.size();
-        let z = match element.body {
-            Body::Wall { .. } => -1.0,
-            _ => index as f32 * 0.001,
-        };
-        let transform = Transform::from_translation(element.pos.extend(z))
-            .with_rotation(Quat::from_rotation_z(element.angle));
-        let color = match &element.body {
-            Body::Lattice { material, .. } => materials.get(*material).color,
-            Body::Ball { color, .. } | Body::Wall { color, .. } => Color::srgb_from_array(*color),
-        };
+        let color = preview_color(element, &materials);
+        let transform = preview_transform(index, element);
         if element.is_round() {
             commands.spawn((
-                Preview,
+                Preview(index),
                 Mesh2d(meshes.add(Ellipse::new(size.x * 0.5, size.y * 0.5))),
                 MeshMaterial2d(color_materials.add(color)),
                 transform,
             ));
         } else {
-            commands.spawn((Preview, Sprite::from_color(color, size), transform));
+            commands.spawn((Preview(index), Sprite::from_color(color, size), transform));
         }
-        if let Some(tags) = tags(element) {
-            let top = element.pos + Vec2::Y * (size.y * 0.5 + 4.0);
-            commands.spawn((
-                Preview,
-                Text2d::new(tags),
-                TextFont {
-                    font_size: FontSize::Px(11.0),
-                    ..default()
-                },
-                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
-                Anchor::BOTTOM_CENTER,
-                Transform::from_translation(top.extend(5.0)),
-            ));
+        commands.spawn((
+            PreviewLabel(index),
+            Text2d::new(tags(element, editor.selected == Some(index)).unwrap_or_default()),
+            TextFont {
+                font_size: FontSize::Px(LABEL_SIZE),
+                ..default()
+            },
+            TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
+            Anchor::BOTTOM_CENTER,
+            Transform::from_translation(label_position(element)),
+        ));
+    }
+    *drawn = Some((bodies, materials.clone()));
+}
+
+/// Keeps labels the same size on screen at any zoom.
+fn scale_labels(
+    cameras: Query<&Projection, With<WorldCamera>>,
+    mut labels: Query<&mut Transform, With<PreviewLabel>>,
+) {
+    let Ok(Projection::Orthographic(ortho)) = cameras.single() else {
+        return;
+    };
+    let scale = Vec3::splat(ortho.scale);
+    for mut transform in &mut labels {
+        if transform.scale != scale {
+            transform.scale = scale;
         }
     }
 }
 
-/// Name and behaviours, shown above an element in the editor.
-fn tags(element: &Element) -> Option<String> {
+/// Name and behaviours, shown above an element in the editor. Walls only show their name while
+/// selected, since levels tend to have many of them.
+fn tags(element: &Element, selected: bool) -> Option<String> {
     let mut tags = vec![];
-    if !element.name.is_empty() && !matches!(element.body, Body::Wall { .. }) {
+    let wall = matches!(element.body, Body::Wall { .. });
+    if !element.name.is_empty() && (!wall || selected) {
         tags.push(element.name.clone());
     }
     if element.control != Control::None {

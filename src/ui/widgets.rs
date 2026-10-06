@@ -12,7 +12,7 @@ use bevy::feathers::theme::ThemedText;
 use bevy::prelude::*;
 use bevy::ui_widgets::SliderPrecision;
 
-use super::bind::{Bind, ChoiceCaption, ChoiceItem, Field, Shown};
+use super::bind::{Bind, ChoiceCaption, ChoiceItem, Field, ShowWhen, Shown};
 use super::{Act, Action, Chevron, Section, SectionBody};
 
 pub type Item = Box<dyn Scene>;
@@ -38,6 +38,19 @@ pub fn row(items: Vec<Item>) -> Item {
             align_items: AlignItems::Center,
             column_gap: px(6),
         }
+        Children [ {items} ]
+    })
+}
+
+/// A vertical stack shown only while `field` is on (see `ShowWhen`).
+pub fn show_when(field: Field, items: Vec<Item>) -> Item {
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            row_gap: px(6),
+        }
+        ShowWhen(field)
         Children [ {items} ]
     })
 }
@@ -156,7 +169,7 @@ pub fn text_input(field: Field) -> Item {
         Node { flex_grow: 1.0 }
         Children [
             (
-                @FeathersTextInput { @max_characters: 40usize }
+                @FeathersTextInput { @max_characters: 200usize }
                 Bind(field)
             )
         ]

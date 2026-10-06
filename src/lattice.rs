@@ -19,6 +19,10 @@ pub struct Cell {
     pub damage: f32,
     /// Intact bonds and pins attached to this cell, recounted every physics step.
     pub bonds: u8,
+    /// Whether this cell has ever been bonded; only those count as debris once loose.
+    pub was_bonded: bool,
+    /// Seconds since the cell lost its last bond.
+    pub loose_for: f32,
 }
 
 /// A bond between two cells, or a pin (`material == None`) between an anchor and a body.
@@ -86,6 +90,9 @@ pub struct LatticeSpec {
     pub round: bool,
     pub pins: Vec<Pin>,
     pub ccd: bool,
+    /// Let Avian put the cells to sleep once the lattice is at rest. Off for lattices that hang
+    /// from a moving carrier or get steered, since sleeping cells would stop following.
+    pub can_sleep: bool,
     /// Overrides the material's restitution, combined with `Max` so it wins against anything.
     pub bounce: Option<f32>,
     /// Overrides the material's friction, combined with `Min` so it wins against anything.
@@ -150,6 +157,8 @@ pub fn spawn_lattice(
                     material: spec.material,
                     damage: 0.0,
                     bonds: 0,
+                    was_bonded: false,
+                    loose_for: 0.0,
                 },
                 group,
                 RigidBody::Dynamic,
@@ -158,13 +167,15 @@ pub fn spawn_lattice(
                 friction,
                 restitution,
                 LinearVelocity(spec.velocity),
-                SleepingDisabled,
                 Transform::from_translation(pos.extend(0.0))
                     .with_rotation(Quat::from_rotation_z(spec.angle)),
                 Sprite::from_color(params.color, Vec2::splat(spec.cell)),
             ));
             if spec.ccd {
                 cell.insert(SweptCcd::default());
+            }
+            if !spec.can_sleep {
+                cell.insert(SleepingDisabled);
             }
             cells[(j * spec.cols + i) as usize] = Some(cell.id());
         }
@@ -194,7 +205,6 @@ pub fn spawn_lattice(
                         .with_point_compliance(strength.point_compliance)
                         .with_angle_compliance(strength.angle_compliance),
                     JointCollisionDisabled,
-                    JointForces::new(),
                     Bond {
                         material: Some(spec.material),
                         cell_size: spec.cell,
@@ -253,7 +263,6 @@ pub fn spawn_pin(
             .with_local_basis1(local.rotation.as_radians())
             .with_point_compliance(materials.pins.point_compliance)
             .with_angle_compliance(materials.pins.angle_compliance),
-        JointForces::new(),
         Bond::pin(cell_size),
         group,
     ));

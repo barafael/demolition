@@ -39,6 +39,11 @@ impl Plugin for UiPlugin {
             .init_resource::<LevelFiles>()
             .init_resource::<Actions>()
             .init_resource::<PendingPaste>()
+            .init_resource::<PointerOwner>()
+            .add_systems(
+                PreUpdate,
+                update_pointer_owner.after(bevy::picking::PickingSystems::Hover),
+            )
             .add_observer(on_activate)
             .add_observer(bind::on_f32_change)
             .add_observer(bind::on_bool_change)
@@ -55,6 +60,7 @@ impl Plugin for UiPlugin {
                     apply_actions,
                     poll_paste,
                     bind::sync_widgets,
+                    bind::show_when,
                     show_sections,
                     show_for_mode,
                     sidebar::rebuild_lists,
@@ -72,16 +78,55 @@ pub const SIDEBAR_WIDTH: f32 = sidebar::WIDTH;
 pub const TOOLBAR_WIDTH: f32 = inspector::WIDTH + TOOLBAR_COLLAPSED_WIDTH;
 pub const TOOLBAR_COLLAPSED_WIDTH: f32 = 44.0;
 
-/// Run condition: the pointer is over a panel, so clicks and scrolls aren't for the world.
-pub fn pointer_over_ui(hover: Res<HoverMap>, nodes: Query<(), With<Node>>) -> bool {
-    hover
-        .values()
-        .any(|hits| hits.keys().any(|entity| nodes.contains(*entity)))
+/// Whether the current mouse gesture belongs to the UI. A press decides for the whole drag: one
+/// that starts on a panel stays with the UI when it leaves the panel, and one that starts in the
+/// world stays with the world when it crosses a panel (including its release). Between
+/// gestures, hovering decides, which is what the scroll wheel goes by.
+#[derive(Resource, Default)]
+pub struct PointerOwner {
+    ui: bool,
 }
 
-/// Run condition: a text field has keyboard focus, so keys aren't shortcuts.
-pub fn typing(focus: Res<InputFocus>, texts: Query<(), With<EditableText>>) -> bool {
-    focus.get().is_some_and(|entity| texts.contains(entity))
+fn update_pointer_owner(
+    mut owner: ResMut<PointerOwner>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    hover: Res<HoverMap>,
+    nodes: Query<(), With<Node>>,
+) {
+    let over_ui = || {
+        hover
+            .values()
+            .any(|hits| hits.keys().any(|entity| nodes.contains(*entity)))
+    };
+    let pressed = buttons.get_just_pressed().next().is_some();
+    let idle =
+        buttons.get_pressed().next().is_none() && buttons.get_just_released().next().is_none();
+    if pressed || idle {
+        owner.ui = over_ui();
+    }
+}
+
+/// Run condition: mouse input is for the world, not the panels.
+pub fn world_pointer(owner: Res<PointerOwner>) -> bool {
+    !owner.ui
+}
+
+/// Widgets that keep keyboard focus: text fields and open menus.
+type FocusKeepers = Or<(With<EditableText>, With<MenuItem>, With<MenuPopup>)>;
+
+fn keeps_focus(entity: Entity, keep: &Query<(), FocusKeepers>, parents: &Query<&ChildOf>) -> bool {
+    keep.contains(entity) || parents.iter_ancestors(entity).any(|a| keep.contains(a))
+}
+
+/// Run condition: a text field or an open menu has the keyboard, so keys aren't shortcuts.
+pub fn keyboard_captured(
+    focus: Res<InputFocus>,
+    keep: Query<(), FocusKeepers>,
+    parents: Query<&ChildOf>,
+) -> bool {
+    focus
+        .get()
+        .is_some_and(|entity| keeps_focus(entity, &keep, &parents))
 }
 
 /// The accordion sections of the sidebar.
@@ -164,6 +209,7 @@ pub enum Action {
     Preset(&'static str),
     CopyLevel,
     PasteLevel,
+    ResetMaterials,
     ToggleSection(Section),
     ToggleToolbar,
 }
@@ -207,14 +253,14 @@ fn on_activate(activate: On<Activate>, acts: Query<&Act>, mut actions: ResMut<Ac
 /// open menus.
 fn release_focus(
     mut focus: ResMut<InputFocus>,
-    keep: Query<(), Or<(With<EditableText>, With<MenuItem>, With<MenuPopup>)>>,
+    keep: Query<(), FocusKeepers>,
     parents: Query<&ChildOf>,
 ) {
-    let Some(entity) = focus.get() else { return };
-    if keep.contains(entity) || parents.iter_ancestors(entity).any(|a| keep.contains(a)) {
-        return;
+    if let Some(entity) = focus.get()
+        && !keeps_focus(entity, &keep, &parents)
+    {
+        focus.clear();
     }
-    focus.clear();
 }
 
 fn apply_actions(
@@ -233,7 +279,13 @@ fn apply_actions(
     mut toolbar: ResMut<ToolbarOpen>,
     cameras: Query<&Transform, With<crate::visuals::WorldCamera>>,
 ) {
+    let playing = *mode.get() == Mode::Play;
     for action in std::mem::take(&mut actions.0) {
+        // While playing, the spawned elements refer to the level by index, so replacing the
+        // level means starting it over.
+        if playing && matches!(action, Action::Load(_) | Action::Preset(_)) {
+            restart.0 = true;
+        }
         match action {
             Action::None => {}
             Action::TogglePlay => next_mode.set(match mode.get() {
@@ -289,6 +341,10 @@ fn apply_actions(
                 };
             }
             Action::PasteLevel => paste.0 = Some(clipboard.fetch_text()),
+            Action::ResetMaterials => {
+                level.materials = Default::default();
+                files.status = "Materials reset to defaults".into();
+            }
             Action::ToggleSection(section) => {
                 if !open.0.remove(&section) {
                     open.0.insert(section);
@@ -304,6 +360,8 @@ fn poll_paste(
     mut level: ResMut<Level>,
     mut editor: ResMut<Editor>,
     mut files: ResMut<LevelFiles>,
+    mode: Res<State<Mode>>,
+    mut restart: ResMut<Restart>,
 ) {
     let Some(read) = &mut paste.0 else { return };
     let Some(result) = read.poll_result() else {
@@ -318,6 +376,7 @@ fn poll_paste(
             let status = format!("Pasted {}", pasted.name);
             *level = pasted;
             editor.selected = None;
+            restart.0 |= *mode.get() == Mode::Play;
             status
         }
         Err(e) => format!("Paste failed: {e}"),
@@ -384,6 +443,7 @@ fn update_texts(
     real: Res<Time<Real>>,
     bodies: Query<(), With<RigidBody>>,
     mut fps: Local<f32>,
+    mut since_stats: Local<f32>,
 ) {
     let dt = real.delta_secs().max(1e-6);
     *fps = if *fps == 0.0 {
@@ -391,6 +451,13 @@ fn update_texts(
     } else {
         *fps * 0.95 + 0.05 / dt
     };
+    // Changing text means re-shaping it and re-laying out the UI, so the stats line, which
+    // changes every frame, is only refreshed a few times per second.
+    *since_stats += dt;
+    let refresh_stats = *since_stats >= 0.25;
+    if refresh_stats {
+        *since_stats = 0.0;
+    }
     let scoring = level.elements.iter().any(|e| e.points != 0);
     let two_players = level
         .elements
@@ -398,6 +465,7 @@ fn update_texts(
         .any(|e| e.owner == Some(Player::Two) || e.credit == Credit::Player(Player::Two));
     for (kind, mut text) in &mut texts {
         let value = match kind {
+            Dyn::Stats if !refresh_stats => continue,
             Dyn::Stats => {
                 let mut s = format!("{:.0} fps | {} bodies", *fps, bodies.iter().count());
                 if *mode.get() == Mode::Play {
