@@ -409,6 +409,58 @@ fn wall(name: &str, pos: Vec2, width: f32, height: f32) -> Element {
     }
 }
 
+fn pins(f: impl FnOnce(&mut Pins)) -> Pins {
+    let mut p = Pins::default();
+    f(&mut p);
+    p
+}
+
+/// A destructible lattice block that is worth `points` once it comes apart.
+fn target(
+    name: &str,
+    pos: Vec2,
+    material: MaterialKind,
+    cols: i32,
+    rows: i32,
+    cell: f32,
+    points: i32,
+) -> Element {
+    Element {
+        name: name.into(),
+        pos,
+        points,
+        destroyed_at: 0.04,
+        body: lattice(material, cols, rows, cell),
+        ..default()
+    }
+}
+
+/// A heavy indestructible ball to grab and throw.
+fn ball(pos: Vec2, radius: f32) -> Element {
+    Element {
+        name: "Ball".into(),
+        pos,
+        body: Body::Ball {
+            radius,
+            density: 5.0,
+            restitution: 0.2,
+            friction: 0.4,
+            color: [0.35, 0.38, 0.45],
+        },
+        ..default()
+    }
+}
+
+fn crate_at(pos: Vec2) -> Element {
+    Element {
+        name: "Crate".into(),
+        pos,
+        points: 25,
+        body: lattice(MaterialKind::Wood, 4, 4, 10.0),
+        ..default()
+    }
+}
+
 pub fn preset_empty() -> Level {
     Level {
         elements: vec![wall("Floor", Vec2::new(0.0, -600.0), 6000.0, 400.0)],
@@ -582,6 +634,214 @@ pub fn preset_pong() -> Level {
         view: Vec2::new(1820.0, 1020.0),
         bounds: Vec2::new(950.0, 560.0),
         gun: false,
+        elements,
+        ..default()
+    }
+}
+
+/// A tall wooden tower on a concrete foundation, a TNT charge at its foot, and some crates
+/// and a cannonball to throw at it. The tower is one bolted lattice: break enough of it in
+/// the middle and everything above comes down.
+pub fn preset_tower() -> Level {
+    let mut elements = vec![
+        wall("Floor", Vec2::new(0.0, -600.0), 6000.0, 400.0),
+        Element {
+            name: "Foundation".into(),
+            pos: Vec2::new(-300.0, -355.0),
+            points: 100,
+            destroyed_at: 0.04,
+            body: lattice(MaterialKind::Concrete, 6, 6, 15.0),
+            pins: pins(|p| p.bottom = true),
+            ..default()
+        },
+        Element {
+            name: "Tower".into(),
+            // Half a pixel above the foundation: its bolts carry it, and the contact
+            // doesn't fight the pins.
+            pos: Vec2::new(-300.0, -69.5),
+            points: 400,
+            destroyed_at: 0.04,
+            body: lattice(MaterialKind::Wood, 8, 40, 12.0),
+            pins: pins(|p| {
+                p.bottom = true;
+                p.every = 2;
+            }),
+            ..default()
+        },
+        target(
+            "Cap",
+            Vec2::new(-300.0, 176.5),
+            MaterialKind::Concrete,
+            10,
+            1,
+            12.0,
+            50,
+        ),
+        target(
+            "TNT",
+            Vec2::new(-400.0, -388.0),
+            MaterialKind::Tnt,
+            2,
+            2,
+            12.0,
+            250,
+        ),
+    ];
+    elements.extend([
+        crate_at(Vec2::new(-100.0, -380.0)),
+        crate_at(Vec2::new(-100.0, -340.0)),
+    ]);
+    elements.push(crate_at(Vec2::new(-40.0, -380.0)));
+    elements.push(ball(Vec2::new(0.0, -382.0), 18.0));
+    Level {
+        name: "tower".into(),
+        gun_pos: Vec2::new(-650.0, -330.0),
+        elements,
+        ..default()
+    }
+}
+
+/// A heavy steel ball hangs from a crane beside a glass house. Grab the ball, pull it aside
+/// and let go to wreck the house - or shoot the charge planted next to it.
+pub fn preset_wreck() -> Level {
+    let elements = vec![
+        wall("Floor", Vec2::new(0.0, -600.0), 6000.0, 400.0),
+        wall("Mast", Vec2::new(-560.0, -100.0), 40.0, 600.0),
+        wall("Jib", Vec2::new(-350.0, 185.0), 460.0, 30.0),
+        Element {
+            name: "Wrecking ball".into(),
+            pos: Vec2::new(-180.0, 100.0),
+            // Hung from one bolt at its top corner (`every` skips all but the last), tilted,
+            // so it swings on its own once the level starts.
+            angle: 0.5,
+            points: 300,
+            body: Body::Lattice {
+                material: MaterialKind::Steel,
+                cols: 9,
+                rows: 9,
+                cell: 11.0,
+                round: true,
+            },
+            pins: pins(|p| {
+                p.top = true;
+                p.every = 999_999;
+            }),
+            ..default()
+        },
+        target(
+            "Pillar",
+            Vec2::new(-40.0, -320.0),
+            MaterialKind::Wood,
+            2,
+            16,
+            10.0,
+            100,
+        ),
+        target(
+            "Pillar",
+            Vec2::new(150.0, -320.0),
+            MaterialKind::Wood,
+            2,
+            16,
+            10.0,
+            100,
+        ),
+        target(
+            "Glass wall",
+            Vec2::new(55.0, -320.0),
+            MaterialKind::Glass,
+            17,
+            16,
+            10.0,
+            150,
+        ),
+        target(
+            "Roof",
+            Vec2::new(55.0, -230.0),
+            MaterialKind::Wood,
+            24,
+            2,
+            10.0,
+            100,
+        ),
+        target(
+            "TNT",
+            Vec2::new(195.0, -388.0),
+            MaterialKind::Tnt,
+            2,
+            2,
+            12.0,
+            250,
+        ),
+        crate_at(Vec2::new(260.0, -380.0)),
+        crate_at(Vec2::new(260.0, -340.0)),
+        crate_at(Vec2::new(310.0, -380.0)),
+    ];
+    Level {
+        name: "wreck".into(),
+        gun_pos: Vec2::new(-750.0, 0.0),
+        elements,
+        ..default()
+    }
+}
+
+/// A row of dominoes and a heavy ball: grab the ball, fling it at the first domino, and
+/// watch the chain go.
+pub fn preset_domino() -> Level {
+    let mut elements = vec![
+        wall("Floor", Vec2::new(0.0, -600.0), 6000.0, 400.0),
+        ball(Vec2::new(-700.0, -382.0), 18.0),
+    ];
+    for k in 0..26 {
+        // Every third domino is taller, for rhythm.
+        let cell = if k % 3 == 1 { 12.0 } else { 10.0 };
+        elements.push(target(
+            &format!("Domino {}", k + 1),
+            Vec2::new(-625.0 + 50.0 * k as f32, -400.0 + 3.0 * cell),
+            MaterialKind::Wood,
+            1,
+            6,
+            cell,
+            10,
+        ));
+    }
+    Level {
+        name: "domino".into(),
+        gun_pos: Vec2::new(-800.0, -150.0),
+        elements,
+        ..default()
+    }
+}
+
+/// A classic block pyramid with glass bands: shoot it apart, or pull blocks out from
+/// underneath and let it settle crooked.
+pub fn preset_pyramid() -> Level {
+    let mut elements = vec![wall("Floor", Vec2::new(0.0, -600.0), 6000.0, 400.0)];
+    for row in 0..7 {
+        let count = 7 - row;
+        let glass = row % 2 == 1;
+        for i in 0..count {
+            elements.push(target(
+                "Block",
+                Vec2::new(
+                    (i as f32 - (count as f32 - 1.0) / 2.0) * 62.0,
+                    -385.0 + row as f32 * 30.0,
+                ),
+                if glass {
+                    MaterialKind::Glass
+                } else {
+                    MaterialKind::Wood
+                },
+                6,
+                3,
+                10.0,
+                if glass { 30 } else { 20 },
+            ));
+        }
+    }
+    Level {
+        name: "pyramid".into(),
+        gun_pos: Vec2::new(-650.0, -150.0),
         elements,
         ..default()
     }
@@ -799,7 +1059,15 @@ mod tests {
 
     #[test]
     fn presets_round_trip_through_ron() {
-        for level in [preset_empty(), preset_lab(), preset_pong()] {
+        for level in [
+            preset_empty(),
+            preset_lab(),
+            preset_pong(),
+            preset_tower(),
+            preset_wreck(),
+            preset_domino(),
+            preset_pyramid(),
+        ] {
             let text =
                 ron::ser::to_string_pretty(&level, ron::ser::PrettyConfig::default()).unwrap();
             let back: Level = ron::from_str(&text).unwrap();
@@ -809,7 +1077,15 @@ mod tests {
 
     #[test]
     fn levels_round_trip_through_share_links() {
-        for level in [preset_empty(), preset_lab(), preset_pong()] {
+        for level in [
+            preset_empty(),
+            preset_lab(),
+            preset_pong(),
+            preset_tower(),
+            preset_wreck(),
+            preset_domino(),
+            preset_pyramid(),
+        ] {
             let link = to_link(&level).unwrap();
             assert!(
                 link.len() < 8000,

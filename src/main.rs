@@ -1,6 +1,7 @@
 mod editor;
 mod effects;
 mod fracture;
+mod grab;
 mod gun;
 mod lattice;
 mod level;
@@ -108,6 +109,10 @@ impl Launch {
         match self.level.as_deref() {
             None | Some("lab") => level::preset_lab(),
             Some("pong") => level::preset_pong(),
+            Some("tower") => level::preset_tower(),
+            Some("wreck") => level::preset_wreck(),
+            Some("domino") => level::preset_domino(),
+            Some("pyramid") => level::preset_pyramid(),
             Some("empty") => level::preset_empty(),
             Some(name) => level::load(name).unwrap_or_else(|e| {
                 warn!("could not load level {name}: {e}");
@@ -156,6 +161,7 @@ fn main() {
     .add_plugins((
         SimPlugin,
         visuals::VisualsPlugin,
+        grab::GrabPlugin,
         effects::EffectsPlugin,
         editor::EditorPlugin,
         ui::UiPlugin,

@@ -135,6 +135,15 @@ pub struct CursorWorld(pub Option<Vec2>);
 #[derive(Resource, Default)]
 pub struct Restart(pub bool);
 
+/// The element the mouse is holding in play mode (see `grab.rs`). Keep-speed leaves a held
+/// element alone, so a grabbed Pong ball doesn't pull away from the cursor.
+#[derive(Resource, Default)]
+pub struct Grab {
+    pub root: Option<Entity>,
+    /// Where the element was grabbed, relative to the cursor, so it doesn't jump on pickup.
+    pub offset: Vec2,
+}
+
 #[derive(Resource, Default)]
 struct Respawns(Vec<(usize, f32)>);
 
@@ -175,13 +184,17 @@ impl Plugin for PlayPlugin {
             .init_resource::<Score>()
             .init_resource::<CursorWorld>()
             .init_resource::<Restart>()
+            .init_resource::<Grab>()
             .init_resource::<Respawns>()
             .init_resource::<ClearDebris>()
             .init_resource::<Explosions>()
             .init_resource::<Highscores>()
             .add_systems(PreUpdate, sync_level_materials)
             .add_systems(OnEnter(Mode::Play), enter_play)
-            .add_systems(OnExit(Mode::Play), (clear_level, save_highscores))
+            .add_systems(
+                OnExit(Mode::Play),
+                (clear_level, drop_grab, save_highscores),
+            )
             .add_systems(
                 Update,
                 (
@@ -253,7 +266,14 @@ fn enter_play(
     breaks.0.clear();
     respawns.0.clear();
     for (index, element) in level.elements.iter().enumerate() {
-        spawn_element(&mut commands, &materials, anchor.0, element, index, level.resolution);
+        spawn_element(
+            &mut commands,
+            &materials,
+            anchor.0,
+            element,
+            index,
+            level.resolution,
+        );
     }
 }
 
@@ -268,6 +288,11 @@ fn clear_level(
 
 fn save_highscores(highscores: Res<Highscores>) {
     highscores.save();
+}
+
+/// The world is rebuilt on the next Play entry, so a held element reference would go stale.
+fn drop_grab(mut grab: ResMut<Grab>) {
+    grab.root = None;
 }
 
 fn restart(
@@ -287,7 +312,14 @@ fn restart(
     *score = Score::default();
     respawns.0.clear();
     for (index, element) in level.elements.iter().enumerate() {
-        spawn_element(&mut commands, &materials, anchor.0, element, index, level.resolution);
+        spawn_element(
+            &mut commands,
+            &materials,
+            anchor.0,
+            element,
+            index,
+            level.resolution,
+        );
     }
 }
 
@@ -541,6 +573,7 @@ fn drive(
 /// whatever it is hitting.
 fn keep_speed(
     level: Res<Level>,
+    grab: Res<Grab>,
     time: Res<Time>,
     mut roots: Query<(Entity, &mut ElementRoot)>,
     mut bodies: Query<
@@ -560,6 +593,8 @@ fn keep_speed(
     let targets: HashMap<Entity, (f32, bool)> = roots
         .iter()
         .filter(|(_, root)| !root.destroyed)
+        // Whatever the mouse holds is steered by it instead.
+        .filter(|(entity, _)| Some(*entity) != grab.root)
         .filter_map(|(entity, root)| {
             let e = level.elements.get(root.index)?;
             let target = e.keep_speed + e.speed_ramp * root.age;

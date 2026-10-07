@@ -11,7 +11,7 @@ use crate::gun::{Ammo, Gun, MUZZLE, Round, fire};
 use crate::lattice::{Bond, Cell, WorldAnchor};
 use crate::level::Level;
 use crate::materials::Materials;
-use crate::play::{ClearDebris, CursorWorld, Mode, Restart};
+use crate::play::{ClearDebris, CursorWorld, Grab, Mode, Restart};
 use crate::ui::{keyboard_captured, world_pointer};
 
 pub struct VisualsPlugin;
@@ -149,7 +149,9 @@ fn toggle_mode(
     }
 }
 
-fn aim_and_fire(
+/// Aims at the cursor and fires on left click; the wheel sets muzzle speed, the right button
+/// repositions the gun - unless a grab (see `grab.rs`) claimed that press.
+pub(crate) fn aim_and_fire(
     mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -159,6 +161,7 @@ fn aim_and_fire(
     materials: Res<Materials>,
     anchor: Res<WorldAnchor>,
     mut gun: ResMut<Gun>,
+    grab: Res<Grab>,
 ) {
     if !level.gun {
         return;
@@ -170,7 +173,9 @@ fn aim_and_fire(
         return;
     };
     if buttons.pressed(MouseButton::Right) {
-        gun.pos = cursor;
+        if grab.root.is_none() {
+            gun.pos = cursor;
+        }
         return;
     }
     if let Some(dir) = (cursor - gun.pos).try_normalize() {

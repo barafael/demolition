@@ -87,6 +87,13 @@ pub struct PointerOwner {
     ui: bool,
 }
 
+impl PointerOwner {
+    /// Whether the mouse is over a panel, so world gestures like grabbing don't apply.
+    pub fn over_ui(&self) -> bool {
+        self.ui
+    }
+}
+
 fn update_pointer_owner(
     mut owner: ResMut<PointerOwner>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -328,6 +335,10 @@ fn apply_actions(
             Action::Preset(name) => {
                 *level = match name {
                     "pong" => level::preset_pong(),
+                    "tower" => level::preset_tower(),
+                    "wreck" => level::preset_wreck(),
+                    "domino" => level::preset_domino(),
+                    "pyramid" => level::preset_pyramid(),
                     "empty" => level::preset_empty(),
                     _ => level::preset_lab(),
                 };

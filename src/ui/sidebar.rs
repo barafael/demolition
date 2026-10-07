@@ -64,6 +64,14 @@ fn world_section() -> Item {
                 button("Pong", Action::Preset("pong"), ButtonVariant::Normal),
                 button("Empty", Action::Preset("empty"), ButtonVariant::Normal),
             ]),
+            row(vec![
+                button("Tower", Action::Preset("tower"), ButtonVariant::Normal),
+                button("Wreck", Action::Preset("wreck"), ButtonVariant::Normal),
+            ]),
+            row(vec![
+                button("Domino", Action::Preset("domino"), ButtonVariant::Normal),
+                button("Pyramid", Action::Preset("pyramid"), ButtonVariant::Normal),
+            ]),
             caption("Saved levels"),
             Box::new(bsn! {
                 Node {
@@ -182,6 +190,8 @@ fn help_section() -> Item {
             caption("Play: R restart, C clear debris, B stress overlay, T trajectory."),
             caption("G flips gravity, M slow motion, Space pause, Tab back to the editor."),
             caption("Gun: left click fires, right click moves it, wheel sets speed, 1-6 ammo."),
+            caption("Grab: right-drag picks up any element - throw it by letting go mid-swing."),
+            caption("A hard yank tears pinned pieces loose. Left-drag grabs when no gun."),
         ],
     )
 }

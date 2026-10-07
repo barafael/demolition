@@ -24,6 +24,7 @@ use crate::gun::{Ammo, Gun, aim_at, fire};
 use crate::lattice::{Bond, Cell, Group, WorldAnchor};
 use crate::level::{self, Body, Level};
 use crate::materials::{MaterialKind, Materials};
+use crate::play::Driven;
 use crate::play::{ElementRoot, Mode, Score};
 
 const HZ: f64 = 64.0;
@@ -542,41 +543,90 @@ fn process_cpu_seconds() -> Option<f64> {
 /// Physics step cost for each preset, after settling, and for the Lab after a barrage of
 /// cannonballs has filled it with debris. Also reports the number of contact pairs the
 /// narrow phase tracks, since that is what debris piles inflate.
-/// `--rest`: how still each Lab structure is after settling for 3 s. Structures that keep
-/// moving never sleep, so this shows where simulation time goes on nothing visible.
+/// `--rest`: how still every preset is after settling for 3 s. Structures that keep moving
+/// never sleep, so this shows where simulation time goes on nothing visible.
 pub fn rest_speeds() {
-    let level = level::preset_lab();
+    let cases = bench_cases()
+        .into_iter()
+        // The debris case only differs by the barrage, which this probe doesn't fire.
+        .filter(|(_, _, debris)| !*debris);
+    for (name, level, _) in cases {
+        println!("== {name} ==");
+        rest_speeds_of(level);
+    }
+}
+
+fn rest_speeds_of(level: Level) {
     let mut app = make_app(level.clone());
     step(&mut app, 3.0);
+    let broken = app.world().resource::<Stats>().broken;
     let world = app.world_mut();
     let roots = root_indices(world);
-    let mut out: HashMap<usize, Vec<(f32, f32, Vec2, u8)>> = HashMap::new();
+    let mut out: HashMap<usize, Vec<(f32, f32, Vec2, Option<u8>)>> = HashMap::new();
     for (v, w, p, g, c) in world
-        .query::<(&LinearVelocity, &AngularVelocity, &Position, &Group, &Cell)>()
+        .query_filtered::<(
+            &LinearVelocity,
+            &AngularVelocity,
+            &Position,
+            &Group,
+            Option<&Cell>,
+        ), Without<Driven>>()
         .iter(world)
     {
         if let Some(&i) = roots.get(&g.0) {
             out.entry(i)
                 .or_default()
-                .push((v.length(), w.0.abs(), p.0, c.bonds));
+                .push((v.length(), w.0.abs(), p.0, c.map(|c| c.bonds)));
         }
     }
-    for (i, mut cells) in out {
-        cells.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let n = cells.len();
-        let mean = cells.iter().map(|c| c.0).sum::<f32>() / n as f32;
-        let fast = cells.iter().filter(|c| c.0 > 1.0).count();
-        let top: Vec<String> = cells
-            .iter()
-            .take(3)
-            .map(|c| format!("{:.0}px/s@({:.0},{:.0}) bonds {}", c.0, c.2.x, c.2.y, c.3))
-            .collect();
-        println!(
-            "{:<14} {n} cells, mean {mean:.2} px/s, {fast} above 1 px/s; fastest: {}",
-            level.elements[i].name,
-            top.join(", ")
-        );
+    let mut rows: Vec<(String, String)> = out
+        .into_iter()
+        .map(|(i, mut cells)| {
+            cells.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let n = cells.len();
+            let mean = cells.iter().map(|c| c.0).sum::<f32>() / n as f32;
+            let fast = cells.iter().filter(|c| c.0 > 1.0).count();
+            let top: Vec<String> = cells
+                .iter()
+                .take(3)
+                .map(|c| {
+                    format!(
+                        "{:.0}px/s@({:.0},{:.0}) bonds {}",
+                        c.0,
+                        c.2.x,
+                        c.2.y,
+                        c.3.map(|b| b.to_string()).unwrap_or_else(|| "-".into())
+                    )
+                })
+                .collect();
+            (
+                level.elements[i].name.clone(),
+                format!(
+                    "{n} bodies, mean {mean:.2} px/s, {fast} above 1 px/s; fastest: {}",
+                    top.join(", ")
+                ),
+            )
+        })
+        .collect();
+    rows.sort();
+    for (name, report) in rows {
+        println!("{:<14} {report}", name);
     }
+    println!("{:<14} bonds broken while settling: {broken}", "total");
+}
+
+/// Every preset, plus the Lab again after a debris barrage: the benchmark and rest probe
+/// run over all of them.
+fn bench_cases() -> Vec<(&'static str, Level, bool)> {
+    vec![
+        ("lab", level::preset_lab(), false),
+        ("lab + debris", level::preset_lab(), true),
+        ("pong", level::preset_pong(), false),
+        ("tower", level::preset_tower(), false),
+        ("wreck", level::preset_wreck(), false),
+        ("domino", level::preset_domino(), false),
+        ("pyramid", level::preset_pyramid(), false),
+    ]
 }
 
 pub fn bench() {
@@ -601,11 +651,7 @@ pub fn bench() {
         }
         world.flush();
     };
-    let cases: [(&str, Level, bool); 3] = [
-        ("lab", level::preset_lab(), false),
-        ("lab + debris", level::preset_lab(), true),
-        ("pong", level::preset_pong(), false),
-    ];
+    let cases = bench_cases();
     for (name, level, debris) in cases {
         let mut app = make_app(level);
         step(&mut app, 0.5);
