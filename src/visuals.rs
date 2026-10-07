@@ -190,7 +190,7 @@ pub(crate) fn aim_and_fire(
     }
 }
 
-fn play_hotkeys(
+pub fn play_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut gun: ResMut<Gun>,
     mut view: ResMut<View>,

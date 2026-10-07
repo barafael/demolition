@@ -16,6 +16,7 @@ use crate::editor::Editor;
 use crate::gun::{Ammo, Gun};
 use crate::level::{Axis, Body, Control, Credit, Element, Level, PinStyle, Player};
 use crate::materials::{MaterialKind, Strength};
+use crate::net::Net;
 use crate::visuals::View;
 
 /// A value a widget edits.
@@ -24,6 +25,11 @@ pub enum Field {
     #[default]
     None,
     LevelName,
+    /// Whether this peer is in a room (a choice: 0 = no, 1 = yes). Read only.
+    InRoom,
+    PlayerName,
+    /// The room name typed into the join field.
+    RoomDraft,
     Gravity,
     Substeps,
     Resolution,
@@ -196,6 +202,7 @@ pub struct Shown(pub Option<f32>);
 #[derive(SystemParam)]
 pub struct Model<'w> {
     pub level: ResMut<'w, Level>,
+    pub net: ResMut<'w, Net>,
     pub editor: ResMut<'w, Editor>,
     pub gun: ResMut<'w, Gun>,
     pub view: ResMut<'w, View>,
@@ -374,6 +381,9 @@ impl Model<'_> {
         Some(match field {
             Field::None => return None,
             Field::LevelName => S(level.name.clone()),
+            Field::InRoom => C(self.net.room.is_some() as usize),
+            Field::PlayerName => S(self.net.name.clone()),
+            Field::RoomDraft => S(self.net.draft.clone()),
             Field::Gravity => F(level.gravity),
             Field::Substeps => F(level.substeps as f32),
             Field::Resolution => F(level.resolution),
@@ -423,6 +433,20 @@ impl Model<'_> {
             Field::LevelName => {
                 if let Value::S(name) = value {
                     self.level.name = name;
+                }
+            }
+            Field::InRoom => {}
+            Field::PlayerName => {
+                // Empty would leave the cursor unlabelled; the last name stays until a new one.
+                if let Value::S(name) = value
+                    && !name.trim().is_empty()
+                {
+                    self.net.name = name.trim().chars().take(24).collect();
+                }
+            }
+            Field::RoomDraft => {
+                if let Value::S(draft) = value {
+                    self.net.draft = draft;
                 }
             }
             Field::Gravity => self.level.gravity = num,

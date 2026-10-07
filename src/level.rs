@@ -203,6 +203,8 @@ impl Pins {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Element {
+    /// Identifies the element while a room edits the level together (0 = not assigned yet).
+    pub id: u64,
     pub name: String,
     pub pos: Vec2,
     /// Radians.
@@ -245,6 +247,7 @@ pub struct Element {
 impl Default for Element {
     fn default() -> Self {
         Self {
+            id: 0,
             name: String::new(),
             pos: Vec2::ZERO,
             angle: 0.0,
@@ -998,7 +1001,7 @@ pub fn from_ron(text: &str) -> Result<Level, String> {
 const PUBLIC_URL: &str = "https://barafael.github.io/demolition/";
 
 /// The page links should open: this page in the browser, the public site otherwise.
-fn share_base() -> String {
+pub fn share_base() -> String {
     #[cfg(target_arch = "wasm32")]
     if let Some(location) = web_sys::window().map(|w| w.location())
         && let (Ok(origin), Ok(path)) = (location.origin(), location.pathname())

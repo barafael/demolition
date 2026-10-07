@@ -158,7 +158,7 @@ impl Grab {
 }
 
 #[derive(Resource, Default)]
-struct Respawns(Vec<(usize, f32)>);
+pub(crate) struct Respawns(Vec<(usize, f32)>);
 
 const RESPAWN_DELAY: f32 = 1.5;
 /// Loose debris is removed after this long, so long sessions don't slow down as it piles up.
@@ -323,7 +323,7 @@ fn drop_grab(mut grab: ResMut<Grab>) {
     grab.release();
 }
 
-fn restart(
+pub(crate) fn restart(
     mut commands: Commands,
     mut request: ResMut<Restart>,
     spawned: Query<Entity, Or<(With<LevelEntity>, With<Group>, With<GroupRoot>)>>,

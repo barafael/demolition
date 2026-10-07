@@ -52,6 +52,9 @@ serde = { version = "1", features = ["derive"] }
 # Versions must match the ones Bevy uses so these are the same crates.
 glam = { version = "0.32", features = ["serde"] }
 bevy_color = { version = "0.19", features = ["serialize"] }
+# WebRTC peer-to-peer rooms for editing a level together. The fork the checkers game uses: the
+# crates.io release does not support Bevy 0.19 yet.
+bevy_matchbox = { git = "https://github.com/barafael/matchbox.git", branch = "bevy-0.19-socket-hardening" }
 
 # Rayon-parallel collision detection; the browser build is single-threaded.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -59,7 +62,9 @@ avian2d = { version = "0.7", default-features = false, features = ["parallel"] }
 
 # Levels and highscores go to localStorage in the browser; launch options come from the URL.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Location", "Storage", "Window"] }
+web-sys = { version = "0.3", features = ["History", "Location", "Storage", "Window"] }
+# Randomness and the clock: std has neither on wasm32-unknown-unknown.
+js-sys = "0.3"
 
 # Physics is unbearably slow in debug without optimizing dependencies.
 [profile.dev]

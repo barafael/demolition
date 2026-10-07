@@ -28,6 +28,7 @@ View).
 cargo run --release                          # editor with the Lab preset
 cargo run --release -- --level pong --play   # straight into Pong
 cargo run --release -- --link '<share link>' # open a shared level
+cargo run --release -- --room my-room        # edit together in a room
 ```
 
 **Editor:** drag to move, RMB/MMB pan, wheel zoom, Q/E rotate, Ctrl+D duplicate, Del delete,
@@ -40,6 +41,31 @@ physics settings. **Copy link** puts a link on the clipboard that opens the leve
 browser: the whole level is compressed into the URL, nothing is uploaded. Paste accepts such a
 link or a level as RON text. The toolbar on the right tweaks
 the selected element. Levels are saved as RON in `levels/`.
+
+## Editing together
+
+**Edit together** in the sidebar puts you in a room: everyone in it edits the same level live,
+sees the others' pointers (with their names) and what they have selected. **Start a room**
+makes one and puts it in the address bar; **Copy invite link** copies that link, and whoever
+opens it joins. Natively, `--room <name>` joins a room on start, and the same rooms are shared
+with the browser version.
+
+It works like the network play in [chinese-checke.rs](https://github.com/barafael/chinese-checke.rs):
+peers meet through a [matchbox](https://github.com/johanhelsing/matchbox) signaling server and
+then talk peer to peer over WebRTC. One peer, the host (the smallest peer id, so nobody has to
+agree on it), puts every edit in one order and passes it on, so all copies of the level stay
+the same; your own edits show at once and are reconciled as they come back. Edits travel as
+small changes (this element now looks like this, gravity is now 400), so two people working on
+different things never overwrite each other. A newcomer takes the room's level; when two
+people who each edited alone meet, the one who was in the room first keeps theirs. If the host
+leaves, the next one takes over and brings everyone back in step.
+
+Play is not shared: each machine simulates its own game. While you play, world settings from
+the room apply live, and changes to elements wait until you restart or return to the editor.
+
+The signaling server defaults to the one the checkers game uses; build with
+`MATCHBOX_SERVER=wss://…` to use your own (natively also `DEMOLITION_SIGNALING` at run time),
+for example a local `matchbox_server` on `ws://127.0.0.1:3536`.
 
 Headless tuning tools: `--probe` (materials × ammo matrix), `--pong`, `--tnt`, `--rest`,
 `--diag [substeps]`, `--bench`.

@@ -14,6 +14,10 @@ use crate::visuals::WorldCamera;
 
 pub struct EditorPlugin;
 
+/// The editor's systems, which change the level in response to input.
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EditSystems;
+
 #[derive(Resource)]
 pub struct Editor {
     pub selected: Option<usize>,
@@ -56,6 +60,27 @@ pub enum HistoryStep {
 }
 
 impl History {
+    /// Applies a change made by someone else to every stored state as well, so undo takes back
+    /// only this peer's own edits.
+    pub fn rebase(&mut self, change: impl Fn(&mut Level)) {
+        for level in self
+            .undo
+            .iter_mut()
+            .chain(&mut self.redo)
+            .chain(&mut self.committed)
+        {
+            change(level);
+        }
+    }
+
+    /// Starts over, for when the level was replaced from elsewhere.
+    pub fn forget(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.committed = None;
+        self.dirty = false;
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -146,7 +171,8 @@ impl Plugin for EditorPlugin {
                         draw_edit_gizmos,
                     )
                         .chain()
-                        .run_if(in_state(Mode::Edit)),
+                        .run_if(in_state(Mode::Edit))
+                        .in_set(EditSystems),
                     sync_view.run_if(resource_changed::<Level>),
                 ),
             );

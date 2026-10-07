@@ -9,14 +9,19 @@ use bevy::ui_widgets::ScrollArea;
 
 use super::bind::{Field, MatParam};
 use super::widgets::{
-    Item, button, caption, checkbox, choice, column, number, row, section, show_when, slider,
-    text_input,
+    Item, button, caption, checkbox, choice, column, number, row, section, show_when,
+    show_when_choice, slider, text_input,
 };
 use super::{Action, Dyn, LevelFiles, OnlyIn, Section, row_variant};
 use crate::editor::Editor;
 use crate::level::Level;
 use crate::materials::MaterialKind;
+use crate::net::Net;
 use crate::play::Mode;
+
+/// Container of the names of the people in the room.
+#[derive(Component, Clone, Copy, Default)]
+pub struct PeopleList;
 
 /// Container of the element list rows.
 #[derive(Component, Clone, Copy, Default)]
@@ -101,6 +106,60 @@ fn world_section() -> Item {
             number("Bounds ± x", Field::BoundsWidth),
             number("Bounds ± y", Field::BoundsHeight),
             checkbox("Gun (drag it in the editor)", Field::GunEnabled),
+        ],
+    )
+}
+
+fn room_section() -> Item {
+    section(
+        "Edit together",
+        Section::Room,
+        vec![
+            Box::new(
+                bsn! { Text("") ThemedText Dyn::Room TextFont { font_size: FontSize::Px(12.0) } },
+            ),
+            show_when_choice(
+                Field::InRoom,
+                0,
+                vec![
+                    caption(
+                        "Build a level with others: everyone in a room edits the same level live and sees the others' pointers.",
+                    ),
+                    button("Start a room", Action::StartRoom, ButtonVariant::Primary),
+                    caption("Or join one by name"),
+                    row(vec![
+                        text_input(Field::RoomDraft),
+                        button("Join", Action::JoinRoom, ButtonVariant::Normal),
+                    ]),
+                ],
+            ),
+            show_when_choice(
+                Field::InRoom,
+                1,
+                vec![
+                    row(vec![
+                        button(
+                            "Copy invite link",
+                            Action::CopyInvite,
+                            ButtonVariant::Primary,
+                        ),
+                        button("Leave", Action::LeaveRoom, ButtonVariant::Normal),
+                    ]),
+                    caption("Your name"),
+                    text_input(Field::PlayerName),
+                    Box::new(bsn! {
+                        Node {
+                            display: Display::Flex,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(2),
+                        }
+                        PeopleList
+                    }),
+                    caption(
+                        "Joining takes the room's level. Each of you plays on your own machine: while you play, the others' edits to elements wait until you restart or go back to the editor.",
+                    ),
+                ],
+            ),
         ],
     )
 }
@@ -212,6 +271,7 @@ fn help_section() -> Item {
 pub fn spawn(mut commands: Commands) {
     let content: Vec<Item> = vec![
         world_section(),
+        room_section(),
         only_in(
             Mode::Edit,
             vec![
@@ -406,4 +466,56 @@ pub fn rebuild_lists(
         }
         *shown_files = Some(files.names.clone());
     }
+}
+
+/// Lists the people in the room, each in the color of their pointer.
+pub fn rebuild_people(
+    mut commands: Commands,
+    net: Res<Net>,
+    lists: Query<(Entity, Option<&Children>), With<PeopleList>>,
+    mut shown: Local<Vec<(String, Color)>>,
+) {
+    if !net.is_changed() {
+        return;
+    }
+    let people = net.people();
+    if *shown == people {
+        return;
+    }
+    for (list, children) in &lists {
+        for child in children.into_iter().flatten() {
+            commands.entity(*child).despawn();
+        }
+        for (name, color) in &people {
+            commands.spawn((
+                Node {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: px(6),
+                    ..default()
+                },
+                ChildOf(list),
+                children![
+                    (
+                        Node {
+                            width: px(9),
+                            height: px(9),
+                            ..default()
+                        },
+                        BackgroundColor(*color),
+                    ),
+                    (
+                        Text::new(name.clone()),
+                        TextFont {
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(*color),
+                    ),
+                ],
+            ));
+        }
+    }
+    *shown = people;
 }

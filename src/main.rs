@@ -6,6 +6,7 @@ mod gun;
 mod lattice;
 mod level;
 mod materials;
+mod net;
 mod play;
 mod probe;
 mod ui;
@@ -168,6 +169,7 @@ fn main() {
         effects::EffectsPlugin,
         editor::EditorPlugin,
         ui::UiPlugin,
+        net::NetPlugin,
     ))
     .insert_resource(launch.level())
     .insert_resource(Highscores::load());

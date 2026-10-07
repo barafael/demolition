@@ -26,9 +26,14 @@ use crate::editor::{self, Editor, History, HistoryStep};
 use crate::fracture::Stats;
 use crate::level::{self, Credit, Highscores, Level, Player};
 use crate::materials::MaterialKind;
+use crate::net::Net;
 use crate::play::{ClearDebris, Mode, Restart, Score};
 
 pub struct UiPlugin;
+
+/// The panels' systems, which change the level when widgets are used.
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UiSystems;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
@@ -66,9 +71,11 @@ impl Plugin for UiPlugin {
                     sidebar::rebuild_lists,
                     inspector::rebuild,
                     update_texts,
+                    sidebar::rebuild_people,
                     enable_history_buttons,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(UiSystems),
             );
     }
 }
@@ -141,6 +148,7 @@ pub fn keyboard_captured(
 pub enum Section {
     #[default]
     World,
+    Room,
     Elements,
     Gun,
     View,
@@ -198,6 +206,8 @@ pub enum Dyn {
     ToolbarToggle,
     /// What the physics resolution costs: cells and substeps.
     PhysicsCost,
+    /// The room this peer edits in, and who is there.
+    Room,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -222,6 +232,10 @@ pub enum Action {
     ResetMaterials,
     ToggleSection(Section),
     ToggleToolbar,
+    StartRoom,
+    JoinRoom,
+    LeaveRoom,
+    CopyInvite,
 }
 
 /// What a button does when activated.
@@ -287,6 +301,7 @@ fn apply_actions(
     mut paste: ResMut<PendingPaste>,
     mut open: ResMut<OpenSections>,
     mut toolbar: ResMut<ToolbarOpen>,
+    mut net: ResMut<Net>,
     cameras: Query<&Transform, With<crate::visuals::WorldCamera>>,
 ) {
     let playing = *mode.get() == Mode::Play;
@@ -372,6 +387,17 @@ fn apply_actions(
                 }
             }
             Action::ToggleToolbar => toolbar.0 = !toolbar.0,
+            Action::StartRoom => net.join(crate::net::RoomId::random()),
+            Action::JoinRoom => net.join_draft(),
+            Action::LeaveRoom => net.leave(),
+            Action::CopyInvite => {
+                if let Some(link) = net.invite_link() {
+                    net.status = match clipboard.set_text(link) {
+                        Ok(()) => "Invite link copied: whoever opens it joins this room".into(),
+                        Err(e) => format!("Copy failed: {e:?}"),
+                    };
+                }
+            }
         }
     }
 }
@@ -462,6 +488,7 @@ fn update_texts(
     highscores: Res<Highscores>,
     stats: Res<Stats>,
     toolbar: Res<ToolbarOpen>,
+    net: Res<Net>,
     real: Res<Time<Real>>,
     bodies: Query<(), With<RigidBody>>,
     mut fps: Local<f32>,
@@ -533,6 +560,7 @@ fn update_texts(
                 cells.unwrap_or(0),
                 level.effective_substeps()
             ),
+            Dyn::Room => net.summary(),
         };
         if text.0 != value {
             text.0 = value;
