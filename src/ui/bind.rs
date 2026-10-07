@@ -14,7 +14,7 @@ use bevy::ui_widgets::{SliderValue, ValueChange};
 
 use crate::editor::Editor;
 use crate::gun::{Ammo, Gun};
-use crate::level::{Axis, Body, Control, Credit, Element, Level, Player};
+use crate::level::{Axis, Body, Control, Credit, Element, Level, PinStyle, Player};
 use crate::materials::{MaterialKind, Strength};
 use crate::visuals::View;
 
@@ -93,6 +93,9 @@ pub enum ElementField {
     PinBottom,
     PinCenter,
     PinEvery,
+    PinStyle,
+    PinRope,
+    TippedAt,
     Control,
     Axis,
     Speed,
@@ -125,6 +128,7 @@ impl Field {
             Field::Element(E::Axis) => Axis::ALL.iter().map(|a| a.name()).collect(),
             Field::Element(E::Owner) => vec!["nobody", "P1", "P2"],
             Field::Element(E::Credit) => Credit::ALL.iter().map(|c| c.name()).collect(),
+            Field::Element(E::PinStyle) => PinStyle::ALL.iter().map(|p| p.name()).collect(),
             _ => vec![],
         }
     }
@@ -140,6 +144,7 @@ impl Field {
             Field::Element(E::Axis) => Axis::ALL.get(index).map(|a| a.name()),
             Field::Element(E::Owner) => ["nobody", "P1", "P2"].get(index).copied(),
             Field::Element(E::Credit) => Credit::ALL.get(index).map(|c| c.name()),
+            Field::Element(E::PinStyle) => PinStyle::ALL.get(index).map(|p| p.name()),
             _ => None,
         }
     }
@@ -179,6 +184,10 @@ pub struct ChoiceItem {
 /// Shows the node only while `field` is on: true, non-zero, or a choice other than the first.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ShowWhen(pub Field);
+
+/// Shows the node only while the choice `field` is set to option `.1`.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ShowWhenChoice(pub Field, pub usize);
 
 /// The value last pushed into a number input, so it is only updated when the model changes.
 #[derive(Component, Clone, Copy, Default)]
@@ -239,6 +248,9 @@ fn element_get(e: &Element, f: ElementField) -> Option<Value> {
         E::PinBottom => B(pins.bottom),
         E::PinCenter => B(pins.center),
         E::PinEvery => F(pins.every as f32),
+        E::PinStyle => C(PinStyle::ALL.iter().position(|p| *p == pins.style)?),
+        E::PinRope => F(pins.rope),
+        E::TippedAt => F(e.tipped_at),
         E::Control => C(Control::ALL.iter().position(|c| *c == e.control)?),
         E::Axis => C(Axis::ALL.iter().position(|a| *a == e.axis)?),
         E::Speed => F(e.speed),
@@ -309,8 +321,11 @@ fn element_set(e: &mut Element, f: ElementField, v: Value) {
         E::PinTop => e.pins.top = flag,
         E::PinBottom => e.pins.bottom = flag,
         E::PinCenter => e.pins.center = flag,
-        // The wrecking ball hangs from one bolt via `every: 999_999`, so the clamp must allow it.
-        E::PinEvery => e.pins.every = num.round().clamp(1.0, 999_999.0) as u32,
+        // Large values pin only the first and last cell of a side.
+        E::PinEvery => e.pins.every = num.round().clamp(1.0, 1000.0) as u32,
+        E::PinStyle => e.pins.style = PinStyle::ALL.get(choice).copied().unwrap_or_default(),
+        E::PinRope => e.pins.rope = num.max(1.0),
+        E::TippedAt => e.tipped_at = num.clamp(0.0, 180.0),
         E::Control => e.control = Control::ALL.get(choice).copied().unwrap_or_default(),
         E::Axis => e.axis = Axis::ALL.get(choice).copied().unwrap_or_default(),
         E::Speed => e.speed = num,
@@ -632,7 +647,18 @@ pub fn sync_widgets(
 
 /// Shows or hides `ShowWhen` nodes. Hiding rather than rebuilding keeps a slider alive while it
 /// is being dragged across the value that toggles its neighbours.
-pub fn show_when(mut model: Model, mut nodes: Query<(&ShowWhen, &mut Node)>) {
+pub fn show_when(
+    mut model: Model,
+    mut nodes: Query<(&ShowWhen, &mut Node), Without<ShowWhenChoice>>,
+    mut choices: Query<(&ShowWhenChoice, &mut Node), Without<ShowWhen>>,
+) {
+    for (&ShowWhenChoice(field, option), mut node) in &mut choices {
+        let on = model.get(field) == Some(Value::C(option));
+        let display = if on { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
+    }
     for (&ShowWhen(field), mut node) in &mut nodes {
         let on = match model.get(field) {
             Some(Value::B(b)) => b,

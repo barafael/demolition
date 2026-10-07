@@ -137,7 +137,33 @@ impl Body {
     }
 }
 
-/// Which cells are pinned to the anchor. For balls, any flag pins the center.
+/// How a pin holds its cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PinStyle {
+    /// A bolt: holds position and angle; bends, then breaks.
+    #[default]
+    Rigid,
+    /// An axle: holds position, the cell turns freely around it.
+    Hinge,
+    /// Hangs from a rope `rope` pixels long, from a point straight above the pin.
+    Rope,
+}
+
+impl PinStyle {
+    pub const ALL: [PinStyle; 3] = [PinStyle::Rigid, PinStyle::Hinge, PinStyle::Rope];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PinStyle::Rigid => "Rigid (bolt)",
+            PinStyle::Hinge => "Hinge",
+            PinStyle::Rope => "Rope",
+        }
+    }
+}
+
+/// Which cells are pinned, and how. A pin holds on to whatever it touches (a cell of another
+/// element, or a wall), or to the world if nothing is there; a rope pin to whatever is at the
+/// top of the rope. For balls, any flag pins the center.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Pins {
@@ -146,8 +172,11 @@ pub struct Pins {
     pub top: bool,
     pub bottom: bool,
     pub center: bool,
-    /// Pin every n-th cell along a side (the last one is always pinned).
+    /// Pin the first and last cell along a side, and every n-th one between.
     pub every: u32,
+    pub style: PinStyle,
+    /// Rope length in pixels, for `PinStyle::Rope`.
+    pub rope: f32,
 }
 
 impl Default for Pins {
@@ -159,6 +188,8 @@ impl Default for Pins {
             bottom: false,
             center: false,
             every: 1,
+            style: PinStyle::Rigid,
+            rope: 200.0,
         }
     }
 }
@@ -196,6 +227,9 @@ pub struct Element {
     /// Fraction of internal bonds lost at which a lattice counts as destroyed. Losing all its
     /// pins (knocked loose) or leaving the level bounds counts as destroyed too.
     pub destroyed_at: f32,
+    /// Counts as destroyed once turned this many degrees from its starting angle: knocked
+    /// over (0 = off).
+    pub tipped_at: f32,
     /// Steer the element's velocity toward this speed (0 = off). Keeps a Pong ball going.
     pub keep_speed: f32,
     /// Added to the keep-speed target per second the element has been alive (escalation).
@@ -231,6 +265,7 @@ impl Default for Element {
             points: 0,
             credit: Credit::LastHitter,
             destroyed_at: 0.5,
+            tipped_at: 0.0,
             keep_speed: 0.0,
             speed_ramp: 0.0,
             respawn: false,
@@ -455,7 +490,9 @@ fn ball(pos: Vec2, radius: f32) -> Element {
         pos,
         body: Body::Ball {
             radius,
-            density: 5.0,
+            // About 120 times a wood cell: heavy enough to smash through things when thrown,
+            // without a mass ratio the solver can't handle.
+            density: 0.1,
             restitution: 0.2,
             friction: 0.4,
             color: [0.35, 0.38, 0.45],
@@ -723,10 +760,9 @@ pub fn preset_wreck() -> Level {
         wall("Jib", Vec2::new(-350.0, 185.0), 460.0, 30.0),
         Element {
             name: "Wrecking ball".into(),
-            pos: Vec2::new(-180.0, 100.0),
-            // Hung from one bolt at its top corner (`every` skips all but the last), tilted,
-            // so it swings on its own once the level starts.
-            angle: 0.5,
+            // Hangs from the jib on a rope (the pin's rope ends at the jib, so it is tied to
+            // the crane), at rest just left of the house: pull it back and let go.
+            pos: Vec2::new(-180.0, -310.0),
             points: 300,
             body: Body::Lattice {
                 material: MaterialKind::Steel,
@@ -736,8 +772,9 @@ pub fn preset_wreck() -> Level {
                 round: true,
             },
             pins: pins(|p| {
-                p.top = true;
-                p.every = 999_999;
+                p.center = true;
+                p.style = PinStyle::Rope;
+                p.rope = 478.0;
             }),
             ..default()
         },
@@ -808,15 +845,19 @@ pub fn preset_domino() -> Level {
     for k in 0..26 {
         // Every third domino is taller, for rhythm.
         let cell = if k % 3 == 1 { 12.0 } else { 10.0 };
-        elements.push(target(
-            &format!("Domino {}", k + 1),
-            Vec2::new(-625.0 + 50.0 * k as f32, -400.0 + 3.0 * cell),
-            MaterialKind::Wood,
-            1,
-            6,
-            cell,
-            10,
-        ));
+        elements.push(Element {
+            // Dominoes fall over rather than break, so falling over is what scores.
+            tipped_at: 60.0,
+            ..target(
+                &format!("Domino {}", k + 1),
+                Vec2::new(-625.0 + 50.0 * k as f32, -400.0 + 3.0 * cell),
+                MaterialKind::Wood,
+                1,
+                6,
+                cell,
+                10,
+            )
+        });
     }
     Level {
         name: "domino".into(),
@@ -834,22 +875,26 @@ pub fn preset_pyramid() -> Level {
         let count = 7 - row;
         let glass = row % 2 == 1;
         for i in 0..count {
-            elements.push(target(
-                "Block",
-                Vec2::new(
-                    (i as f32 - (count as f32 - 1.0) / 2.0) * 62.0,
-                    -385.0 + row as f32 * 30.0,
-                ),
-                if glass {
-                    MaterialKind::Glass
-                } else {
-                    MaterialKind::Wood
-                },
-                6,
-                3,
-                10.0,
-                if glass { 30 } else { 20 },
-            ));
+            elements.push(Element {
+                // Knocking a block off its row scores as much as breaking it.
+                tipped_at: 45.0,
+                ..target(
+                    "Block",
+                    Vec2::new(
+                        (i as f32 - (count as f32 - 1.0) / 2.0) * 62.0,
+                        -385.0 + row as f32 * 30.0,
+                    ),
+                    if glass {
+                        MaterialKind::Glass
+                    } else {
+                        MaterialKind::Wood
+                    },
+                    6,
+                    3,
+                    10.0,
+                    if glass { 30 } else { 20 },
+                )
+            });
         }
     }
     Level {

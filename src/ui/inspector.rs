@@ -10,11 +10,12 @@ use bevy::ui_widgets::ScrollArea;
 
 use super::bind::{ElementField as E, Field};
 use super::widgets::{
-    Item, button, caption, checkbox, choice, column, number, row, show_when, slider, text_input,
+    Item, button, caption, checkbox, choice, column, number, row, show_when, show_when_choice,
+    slider, text_input,
 };
 use super::{Act, Action, Dyn, OnlyIn};
 use crate::editor::Editor;
-use crate::level::{Body, Element, Level};
+use crate::level::{Body, Element, Level, PinStyle};
 use crate::play::Mode;
 
 /// The part of the toolbar that collapses.
@@ -139,6 +140,21 @@ fn rows(element: &Element) -> Vec<Item> {
             ]),
             checkbox("Center", f(E::PinCenter)),
             number("Every n-th", f(E::PinEvery)),
+            choice("Pin style", f(E::PinStyle)),
+            show_when_choice(
+                f(E::PinStyle),
+                PinStyle::ALL
+                    .iter()
+                    .position(|p| *p == PinStyle::Rope)
+                    .unwrap_or(2),
+                vec![
+                    slider("Rope length", f(E::PinRope), 10.0, 1000.0, 0),
+                    caption("Hangs from a point this far straight above the pin."),
+                ],
+            ),
+            caption(
+                "Pins hold on to whatever they touch (another element or a wall), else the world.",
+            ),
             number("Velocity x", f(E::VelX)),
             number("Velocity y", f(E::VelY)),
         ]);
@@ -178,6 +194,13 @@ fn rows(element: &Element) -> Vec<Item> {
             ));
         }
         items.extend([
+            slider(
+                "Destroyed when tipped (°, 0 = off)",
+                f(E::TippedAt),
+                0.0,
+                180.0,
+                0,
+            ),
             caption("Losing all pins or leaving the bounds also counts as destroyed."),
             checkbox("Respawn when destroyed", f(E::Respawn)),
             slider("Keep speed", f(E::KeepSpeed), 0.0, 3000.0, 0),

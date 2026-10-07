@@ -2,6 +2,7 @@
 //! (player control, scoring, keep-speed, respawning). Leaving Play mode removes it all again.
 
 use std::collections::HashMap;
+use std::f32::consts::{PI, TAU};
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
@@ -9,10 +10,10 @@ use bevy::prelude::*;
 use crate::fracture::{Breaks, Stats};
 use crate::gun::{Gun, Projectile, Round};
 use crate::lattice::{
-    Bond, Cell, Detonating, Doomed, Group, GroupRoot, LatticeSpec, Pin, WorldAnchor, spawn_lattice,
-    spawn_pin,
+    Bond, Cell, Detonating, Doomed, Group, GroupRoot, LatticeSpec, Pin, PinAnchor, PinShape,
+    PinTarget, SpawnedLattice, WorldAnchor, pin_anchor, spawn_lattice, spawn_pin,
 };
-use crate::level::{Axis, Body, Control, Credit, Element, Highscores, Level, Player};
+use crate::level::{Axis, Body, Control, Credit, Element, Highscores, Level, PinStyle, Player};
 use crate::materials::Materials;
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -43,10 +44,6 @@ pub struct ElementRoot {
 #[derive(Component)]
 struct TrackContacts;
 
-/// Makes the bodies of this element report collisions, so it can pass on its hit tag.
-#[derive(Component)]
-pub struct ReportHits;
-
 /// Who an element or projectile belongs to, and which player last hit it.
 #[derive(Component, Default)]
 pub struct HitTag {
@@ -63,26 +60,27 @@ impl HitTag {
 
 /// Adds per-body components requested by markers on group roots (spawned before their bodies
 /// exist as queryable entities).
+///
+/// Collision events can't be handed out like this: Avian reads `CollisionEventsEnabled` only
+/// when a collider is first registered, so every element body is spawned with it instead.
 fn equip_members(
     mut commands: Commands,
     contacts: Query<Entity, Added<TrackContacts>>,
-    reports: Query<Entity, Added<ReportHits>>,
     members: Query<(Entity, &Group), With<RigidBody>>,
 ) {
-    if contacts.is_empty() && reports.is_empty() {
+    if contacts.is_empty() {
         return;
     }
     for (entity, group) in &members {
         if contacts.contains(group.0) {
             commands.entity(entity).insert(CollidingEntities::default());
         }
-        if reports.contains(group.0) {
-            commands.entity(entity).insert(CollisionEventsEnabled);
-        }
     }
 }
 
 /// Passes hit tags along on contact: a paddle tags the ball, the ball tags what it hits.
+/// Every element body reports collisions, so tags travel along chains (a domino knocking over
+/// the next one).
 fn propagate_hits(
     mut collisions: MessageReader<CollisionStart>,
     groups: Query<&Group>,
@@ -144,9 +142,19 @@ pub struct AppliedResolution(pub f32);
 /// element alone, so a grabbed Pong ball doesn't pull away from the cursor.
 #[derive(Resource, Default)]
 pub struct Grab {
+    /// The held body's element.
     pub root: Option<Entity>,
+    /// The body that was grabbed; the held piece is what is still bonded to it.
+    pub body: Option<Entity>,
     /// Where the element was grabbed, relative to the cursor, so it doesn't jump on pickup.
     pub offset: Vec2,
+}
+
+impl Grab {
+    pub fn release(&mut self) {
+        self.root = None;
+        self.body = None;
+    }
 }
 
 #[derive(Resource, Default)]
@@ -283,6 +291,7 @@ fn enter_play(
     *stats = Stats::default();
     breaks.0.clear();
     respawns.0.clear();
+    let mut targets = Vec::new();
     for (index, element) in level.elements.iter().enumerate() {
         spawn_element(
             &mut commands,
@@ -291,6 +300,7 @@ fn enter_play(
             element,
             index,
             level.resolution,
+            &mut targets,
         );
     }
 }
@@ -310,7 +320,7 @@ fn save_highscores(highscores: Res<Highscores>) {
 
 /// The world is rebuilt on the next Play entry, so a held element reference would go stale.
 fn drop_grab(mut grab: ResMut<Grab>) {
-    grab.root = None;
+    grab.release();
 }
 
 fn restart(
@@ -331,6 +341,7 @@ fn restart(
     *score = Score::default();
     respawns.0.clear();
     applied.0 = level.resolution;
+    let mut targets = Vec::new();
     for (index, element) in level.elements.iter().enumerate() {
         spawn_element(
             &mut commands,
@@ -339,10 +350,13 @@ fn restart(
             element,
             index,
             level.resolution,
+            &mut targets,
         );
     }
 }
 
+/// Spawns one element. `targets` are the bodies already in the world that its pins can hold
+/// on to; its own bodies are added for elements spawned after it.
 pub fn spawn_element(
     commands: &mut Commands,
     materials: &Materials,
@@ -350,6 +364,7 @@ pub fn spawn_element(
     element: &Element,
     index: usize,
     resolution: f32,
+    targets: &mut Vec<PinTarget>,
 ) -> Entity {
     let root = commands
         .spawn((
@@ -369,9 +384,6 @@ pub fn spawn_element(
             Name::new(element.name.clone()),
         ))
         .id();
-    if element.owner.is_some() || element.keep_speed > 0.0 {
-        commands.entity(root).insert(ReportHits);
-    }
     let group = Group(root);
     let pose = element.pose();
     let transform = Transform::from_translation(element.pos.extend(0.0))
@@ -384,15 +396,28 @@ pub fn spawn_element(
         home: element.pos,
     });
 
-    // Pins attach to the static world, or to a kinematic carrier the player drives.
-    let anchor = match (&element.body, driven) {
-        (Body::Wall { .. }, _) | (_, None) => (world_anchor, Isometry2d::IDENTITY),
+    // A controlled element hangs from a kinematic carrier the player drives. Otherwise each pin
+    // holds on to whatever body it touches, or to the static world.
+    let world = PinAnchor {
+        entity: world_anchor,
+        pose: Isometry2d::IDENTITY,
+    };
+    let carrier = match (&element.body, driven) {
+        (Body::Wall { .. }, _) | (_, None) => None,
         (_, Some(driven)) => {
             let carrier = commands
                 .spawn((RigidBody::Kinematic, transform, driven, group))
                 .id();
-            (carrier, pose)
+            Some(PinAnchor {
+                entity: carrier,
+                pose,
+            })
         }
+    };
+    let snapshot = targets.clone();
+    let anchor_for = move |point: Vec2| match carrier {
+        Some(carrier) => carrier,
+        None => pin_anchor(&snapshot, root, point, world),
     };
 
     match &element.body {
@@ -401,6 +426,10 @@ pub fn spawn_element(
             height,
             color,
         } => {
+            let shape = PinShape {
+                half: Vec2::new(*width, *height) * 0.5,
+                round: false,
+            };
             let mut wall = commands.spawn((
                 if driven.is_some() {
                     RigidBody::Kinematic
@@ -412,10 +441,18 @@ pub fn spawn_element(
                 Sprite::from_color(Color::srgb_from_array(*color), Vec2::new(*width, *height)),
                 transform.with_translation(element.pos.extend(-1.0)),
                 group,
+                shape,
+                CollisionEventsEnabled,
             ));
             if let Some(driven) = driven {
                 wall.insert(driven);
             }
+            targets.push(PinTarget {
+                entity: wall.id(),
+                root,
+                pose,
+                shape,
+            });
         }
         Body::Ball {
             radius,
@@ -448,6 +485,10 @@ pub fn spawn_element(
                         color: Color::srgb_from_array(*color),
                     },
                     group,
+                    PinShape {
+                        half: Vec2::splat(*radius),
+                        round: true,
+                    },
                 ))
                 .id();
             if driven.is_some() || element.keep_speed > 0.0 {
@@ -461,22 +502,39 @@ pub fn spawn_element(
                     destroyed: false,
                     age: 0.0,
                 });
+                let style = element.pins.style;
+                let holds_at = match style {
+                    PinStyle::Rope => element.pos + Vec2::Y * element.pins.rope,
+                    PinStyle::Rigid | PinStyle::Hinge => element.pos,
+                };
                 spawn_pin(
                     commands,
                     materials,
-                    anchor.0,
-                    anchor.1,
+                    anchor_for(holds_at),
                     ball,
                     pose,
                     Vec2::ZERO,
                     radius * 2.0,
                     group,
+                    style,
+                    element.pins.rope,
                 );
             }
+            targets.push(PinTarget {
+                entity: ball,
+                root,
+                pose,
+                shape: PinShape {
+                    half: Vec2::splat(*radius),
+                    round: true,
+                },
+            });
         }
         Body::Lattice { .. } => {
             let spec = lattice_spec(element, resolution).expect("lattice body");
-            let (bonds, pins) = spawn_lattice(commands, materials, anchor.0, anchor.1, &spec, root);
+            let SpawnedLattice { bonds, pins, cells } =
+                spawn_lattice(commands, materials, &anchor_for, &spec, root);
+            targets.extend(cells);
             if element.keep_speed > 0.0 {
                 commands.entity(root).insert(TrackContacts);
             }
@@ -520,6 +578,8 @@ pub fn lattice_spec(element: &Element, resolution: f32) -> Option<LatticeSpec> {
         velocity: element.velocity,
         round,
         pins: vec![],
+        pin_style: element.pins.style,
+        rope: element.pins.rope,
         ccd: element.velocity != Vec2::ZERO || element.keep_speed > 0.0,
         can_sleep: element.control == Control::None && element.keep_speed == 0.0,
         bounce: element.bounce,
@@ -666,7 +726,7 @@ fn track_elements(
     level: Res<Level>,
     mut roots: Query<(Entity, &mut ElementRoot, &HitTag)>,
     bonds: Query<(&Bond, &Group)>,
-    bodies: Query<&Group, (With<RigidBody>, Without<Driven>)>,
+    bodies: Query<(&Group, &Rotation, Option<&Cell>), (With<RigidBody>, Without<Driven>)>,
     mut score: ResMut<Score>,
     mut highscores: ResMut<Highscores>,
     mut respawns: ResMut<Respawns>,
@@ -682,8 +742,14 @@ fn track_elements(
         *counts.entry(group.0).or_default() += 1;
     }
     let mut alive: HashMap<Entity, usize> = HashMap::new();
-    for group in &bodies {
+    // Summed facing of each element's still-bonded bodies (loose chips don't count), to tell
+    // whether it has been knocked over.
+    let mut facing: HashMap<Entity, Vec2> = HashMap::new();
+    for (group, rotation, cell) in &bodies {
         *alive.entry(group.0).or_default() += 1;
+        if cell.is_none_or(|c| c.bonds > 0) {
+            *facing.entry(group.0).or_default() += Vec2::new(rotation.cos, rotation.sin);
+        }
     }
 
     for (entity, mut root, tag) in &mut roots {
@@ -704,7 +770,13 @@ fn track_elements(
         let gone = alive.get(&entity).copied().unwrap_or(0) == 0;
         let shattered = lost > 0.0 && lost >= element.destroyed_at;
         let knocked_loose = root.pins > 0 && intact_pins.get(&entity).copied().unwrap_or(0) == 0;
-        if !(gone || shattered || knocked_loose) {
+        let tipped = element.tipped_at > 0.0
+            && facing.get(&entity).is_some_and(|f| {
+                let turned = f.to_angle() - element.angle;
+                let turned = (turned + PI).rem_euclid(TAU) - PI;
+                turned.abs().to_degrees() >= element.tipped_at
+            });
+        if !(gone || shattered || knocked_loose || tipped) {
             continue;
         }
         root.destroyed = true;
@@ -732,8 +804,25 @@ fn respawn(
     materials: Res<Materials>,
     anchor: Res<WorldAnchor>,
     mut respawns: ResMut<Respawns>,
+    bodies: Query<(Entity, &Position, &Rotation, &PinShape, &Group), Without<Doomed>>,
 ) {
     let dt = time.delta_secs();
+    if respawns.0.iter().all(|(_, delay)| *delay - dt > 0.0) {
+        for (_, delay) in &mut respawns.0 {
+            *delay -= dt;
+        }
+        return;
+    }
+    // What a respawned element's pins can hold on to: everything as it is now.
+    let mut targets: Vec<PinTarget> = bodies
+        .iter()
+        .map(|(entity, pos, rot, shape, group)| PinTarget {
+            entity,
+            root: group.0,
+            pose: Isometry2d::new(pos.0, Rot2::radians(rot.as_radians())),
+            shape: *shape,
+        })
+        .collect();
     respawns.0.retain_mut(|(index, delay)| {
         *delay -= dt;
         if *delay > 0.0 {
@@ -747,6 +836,7 @@ fn respawn(
                 element,
                 *index,
                 level.resolution,
+                &mut targets,
             );
         }
         false
@@ -781,7 +871,9 @@ fn detonate(
         if power <= 0.0 {
             continue;
         }
+        // Reach depends on the material; the energy on how much material went off.
         let radius = BLAST_RADIUS * power.sqrt();
+        let power = power * cell.share;
         for (entity, pos, mass, mut velocity, asleep, has_ccd) in &mut bodies {
             let offset = pos.0 - center.0;
             let distance = offset.length();

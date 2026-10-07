@@ -7,6 +7,7 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
+use crate::level::PinStyle;
 use crate::materials::{MaterialKind, Materials, Strength};
 
 /// Cell colliders are slightly smaller than their cell so neighbours don't rub at rest.
@@ -28,6 +29,10 @@ pub struct Cell {
     /// Slowly following average of `stress`: the steady load (e.g. from gravity). The stress
     /// glow shows `stress` above this, i.e. impacts travelling through the structure.
     pub stress_base: f32,
+    /// The share of one of its element's own cells this cell stands for: 1, or less when the
+    /// physics resolution divides cells further. Explosions scale with it, so a charge holds
+    /// the same energy at every resolution.
+    pub share: f32,
 }
 
 /// An explosive cell that lost a bond; it blows up this frame.
@@ -79,6 +84,65 @@ pub struct WorldAnchor(pub Entity);
 #[derive(Component)]
 pub struct Doomed;
 
+/// What a pin holds on to: a body, and its pose when the pin is made.
+#[derive(Clone, Copy)]
+pub struct PinAnchor {
+    pub entity: Entity,
+    pub pose: Isometry2d,
+}
+
+/// The outline of an element's body, so pins of other elements can find what they touch.
+#[derive(Component, Clone, Copy)]
+pub struct PinShape {
+    pub half: Vec2,
+    pub round: bool,
+}
+
+/// A body a pin could hold on to.
+#[derive(Clone, Copy)]
+pub struct PinTarget {
+    pub entity: Entity,
+    /// The element it belongs to; pins never hold on to their own element.
+    pub root: Entity,
+    pub pose: Isometry2d,
+    pub shape: PinShape,
+}
+
+/// How far outside a body a pin still counts as touching it, in pixels. Neighbouring bodies
+/// are built with small gaps so their colliders don't rub.
+const PIN_REACH: f32 = 1.5;
+
+impl PinTarget {
+    fn distance_to(&self, point: Vec2) -> f32 {
+        let local = self.pose.inverse().transform_point(point);
+        if self.shape.round {
+            (local.length() - self.shape.half.x).max(0.0)
+        } else {
+            (local.abs() - self.shape.half).max(Vec2::ZERO).length()
+        }
+    }
+}
+
+/// The body a pin at `point` holds on to: the closest one it touches from another element, or
+/// `fallback` (the world, or a controlled element's carrier).
+pub fn pin_anchor(
+    targets: &[PinTarget],
+    own: Entity,
+    point: Vec2,
+    fallback: PinAnchor,
+) -> PinAnchor {
+    targets
+        .iter()
+        .filter(|t| t.root != own)
+        .map(|t| (t, t.distance_to(point)))
+        .filter(|(_, d)| *d <= PIN_REACH)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(fallback, |(t, _)| PinAnchor {
+            entity: t.entity,
+            pose: t.pose,
+        })
+}
+
 pub struct Pin {
     pub col: i32,
     pub row: i32,
@@ -103,6 +167,9 @@ pub struct LatticeSpec {
     /// Only keep the cells inside the inscribed ellipse.
     pub round: bool,
     pub pins: Vec<Pin>,
+    pub pin_style: PinStyle,
+    /// Rope length for `PinStyle::Rope`.
+    pub rope: f32,
     pub ccd: bool,
     /// Let Avian put the cells to sleep once the lattice is at rest. Off for lattices that hang
     /// from a moving carrier or get steered, since sleeping cells would stop following.
@@ -135,16 +202,24 @@ impl LatticeSpec {
     }
 }
 
-/// Spawns the cells, bonds and pins of a lattice as members of `root`. Pins attach to `anchor`,
-/// whose current pose is `anchor_pose`. Returns the number of internal bonds and pins created.
+/// What `spawn_lattice` made.
+pub struct SpawnedLattice {
+    /// Internal bonds.
+    pub bonds: usize,
+    pub pins: usize,
+    /// The cells, as targets for the pins of elements spawned later.
+    pub cells: Vec<PinTarget>,
+}
+
+/// Spawns the cells, bonds and pins of a lattice as members of `root`. `anchor_for` says what
+/// a pin at a world point holds on to (for a rope pin: the point at the top of the rope).
 pub fn spawn_lattice(
     commands: &mut Commands,
     materials: &Materials,
-    anchor: Entity,
-    anchor_pose: Isometry2d,
+    anchor_for: &dyn Fn(Vec2) -> PinAnchor,
     spec: &LatticeSpec,
     root: Entity,
-) -> (usize, usize) {
+) -> SpawnedLattice {
     let group = Group(root);
     let params = materials.get(spec.material);
     let strength = params.strength;
@@ -160,6 +235,7 @@ pub fn spawn_lattice(
     };
 
     let mut cells = vec![None; (spec.cols * spec.rows) as usize];
+    let mut targets = Vec::new();
     for j in 0..spec.rows {
         for i in 0..spec.cols {
             if !spec.has_cell(i, j) {
@@ -175,6 +251,7 @@ pub fn spawn_lattice(
                     loose_for: 0.0,
                     stress: 0.0,
                     stress_base: 0.0,
+                    share: (spec.cell / spec.strain_length).powi(2),
                 },
                 group,
                 RigidBody::Dynamic,
@@ -183,6 +260,9 @@ pub fn spawn_lattice(
                 friction,
                 restitution,
                 LinearVelocity(spec.velocity),
+                // For passing on hit tags. Avian reads this only when the collider is first
+                // registered, so it has to be here from the start.
+                CollisionEventsEnabled,
                 Transform::from_translation(pos.extend(0.0))
                     .with_rotation(Quat::from_rotation_z(spec.angle)),
                 Sprite::from_color(params.color, Vec2::splat(spec.cell)),
@@ -193,7 +273,20 @@ pub fn spawn_lattice(
             if !spec.can_sleep {
                 cell.insert(SleepingDisabled);
             }
+            cell.insert(PinShape {
+                half: Vec2::splat(half),
+                round: false,
+            });
             cells[(j * spec.cols + i) as usize] = Some(cell.id());
+            targets.push(PinTarget {
+                entity: cell.id(),
+                root,
+                pose: Isometry2d::new(pos, rotation),
+                shape: PinShape {
+                    half: Vec2::splat(half),
+                    round: false,
+                },
+            });
         }
     }
 
@@ -241,60 +334,107 @@ pub fn spawn_lattice(
         };
         pins += 1;
         let world = spec.center + rotation * (spec.cell_local(pin.col, pin.row) + pin.offset);
+        let holds_at = match spec.pin_style {
+            PinStyle::Rope => world + Vec2::Y * spec.rope,
+            PinStyle::Rigid | PinStyle::Hinge => world,
+        };
         spawn_pin(
             commands,
             materials,
-            anchor,
-            anchor_pose,
+            anchor_for(holds_at),
             cell,
             Isometry2d::new(world, rotation),
             pin.offset,
             spec.strain_length,
             group,
+            spec.pin_style,
+            spec.rope,
         );
     }
 
-    (bonds, pins)
+    SpawnedLattice {
+        bonds,
+        pins,
+        cells: targets,
+    }
 }
 
 /// Pins `body` to `anchor` at the world point of `at`. `body_offset` is that point in the body's
-/// local frame, and `at.rotation` the body's current rotation.
+/// local frame, and `at.rotation` the body's current rotation. A rope pin hangs the body from
+/// the point `rope` pixels above.
 pub fn spawn_pin(
     commands: &mut Commands,
     materials: &Materials,
-    anchor: Entity,
-    anchor_pose: Isometry2d,
+    anchor: PinAnchor,
     body: Entity,
     at: Isometry2d,
     body_offset: Vec2,
     cell_size: f32,
     group: Group,
+    style: PinStyle,
+    rope: f32,
 ) {
-    let local = anchor_pose.inverse() * at;
-    commands.spawn((
-        FixedJoint::new(anchor, body)
-            .with_local_anchor1(local.translation)
-            .with_local_anchor2(body_offset)
-            // The bodies are at rest in this relative orientation.
-            .with_local_basis1(local.rotation.as_radians())
-            .with_point_compliance(materials.pins.point_compliance)
-            .with_angle_compliance(materials.pins.angle_compliance),
-        Bond::pin(cell_size),
-        group,
-    ));
+    let local = anchor.pose.inverse() * at;
+    let compliance = materials.pins.point_compliance;
+    let mut pin = match style {
+        PinStyle::Rigid => commands.spawn(
+            FixedJoint::new(anchor.entity, body)
+                .with_local_anchor1(local.translation)
+                .with_local_anchor2(body_offset)
+                // The bodies are at rest in this relative orientation.
+                .with_local_basis1(local.rotation.as_radians())
+                .with_point_compliance(compliance)
+                .with_angle_compliance(materials.pins.angle_compliance),
+        ),
+        PinStyle::Hinge => commands.spawn(
+            RevoluteJoint::new(anchor.entity, body)
+                .with_local_anchor1(local.translation)
+                .with_local_anchor2(body_offset)
+                .with_point_compliance(compliance),
+        ),
+        PinStyle::Rope => {
+            let top = anchor
+                .pose
+                .inverse()
+                .transform_point(at.translation + Vec2::Y * rope);
+            commands.spawn(
+                DistanceJoint::new(anchor.entity, body)
+                    .with_local_anchor1(top)
+                    .with_local_anchor2(body_offset)
+                    // Slack is allowed; only the full length holds.
+                    .with_limits(0.0, rope)
+                    .with_compliance(compliance),
+            )
+        }
+    };
+    // Whatever the pin holds on to sits right against the body; contacts would fight the pin.
+    pin.insert((Bond::pin(cell_size), group, JointCollisionDisabled));
+}
+
+/// The two bodies of every pin and bond, whichever joint type holds them.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Joints<'w, 's> {
+    fixed: Query<'w, 's, (Entity, &'static FixedJoint), Without<Doomed>>,
+    hinges: Query<'w, 's, (Entity, &'static RevoluteJoint), Without<Doomed>>,
+    ropes: Query<'w, 's, (Entity, &'static DistanceJoint), Without<Doomed>>,
+}
+
+impl Joints<'_, '_> {
+    pub fn iter(&self) -> impl Iterator<Item = (Entity, [Entity; 2])> + '_ {
+        let fixed = self.fixed.iter().map(|(e, j)| (e, [j.body1, j.body2]));
+        let hinges = self.hinges.iter().map(|(e, j)| (e, [j.body1, j.body2]));
+        let ropes = self.ropes.iter().map(|(e, j)| (e, [j.body1, j.body2]));
+        fixed.chain(hinges).chain(ropes)
+    }
 }
 
 /// Removes doomed entities, plus any joint attached to a doomed body so no joint dangles.
-pub fn despawn_doomed(
-    mut commands: Commands,
-    doomed: Query<Entity, With<Doomed>>,
-    joints: Query<(Entity, &FixedJoint), Without<Doomed>>,
-) {
+pub fn despawn_doomed(mut commands: Commands, doomed: Query<Entity, With<Doomed>>, joints: Joints) {
     if doomed.is_empty() {
         return;
     }
-    for (entity, joint) in &joints {
-        if doomed.contains(joint.body1) || doomed.contains(joint.body2) {
+    for (entity, [body1, body2]) in joints.iter() {
+        if doomed.contains(body1) || doomed.contains(body2) {
             commands.entity(entity).despawn();
         }
     }
@@ -315,9 +455,26 @@ pub fn doom_group(commands: &mut Commands, root: Entity, members: &Query<(Entity
 
 /// Keeps joint compliance in sync with the live-edited material table. Only joints that
 /// actually differ are written, so the solver doesn't re-prepare every joint per slider frame.
-pub fn sync_compliance(materials: Res<Materials>, mut joints: Query<(&mut FixedJoint, &Bond)>) {
+pub fn sync_compliance(
+    materials: Res<Materials>,
+    mut joints: Query<(&mut FixedJoint, &Bond)>,
+    mut hinges: Query<&mut RevoluteJoint, With<Bond>>,
+    mut ropes: Query<&mut DistanceJoint, With<Bond>>,
+) {
     if !materials.is_changed() {
         return;
+    }
+    // Hinges and ropes are always pins.
+    let pin = materials.pins.point_compliance;
+    for mut hinge in &mut hinges {
+        if hinge.point_compliance != pin {
+            hinge.point_compliance = pin;
+        }
+    }
+    for mut rope in &mut ropes {
+        if rope.compliance != pin {
+            rope.compliance = pin;
+        }
     }
     for (mut joint, bond) in &mut joints {
         let s = bond.strength(&materials);

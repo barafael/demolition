@@ -6,7 +6,7 @@ use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
-use crate::level::{Axis, Body, Control, Element, Level};
+use crate::level::{Axis, Body, Control, Element, Level, PinStyle};
 use crate::materials::Materials;
 use crate::play::{CursorWorld, Mode, lattice_spec};
 use crate::ui::{keyboard_captured, world_pointer};
@@ -227,14 +227,21 @@ fn sync_previews(
     if !fresh && !level.is_changed() && !materials.is_changed() && !editor.is_changed() {
         return;
     }
-    let bodies: Vec<Body> = level.elements.iter().map(|e| e.body.clone()).collect();
+    // At a physics resolution other than 1, rounding can change a lattice's outline; draw what
+    // will actually be simulated.
+    let shown: Vec<Element> = level
+        .elements
+        .iter()
+        .map(|e| e.at_resolution(level.resolution))
+        .collect();
+    let bodies: Vec<Body> = shown.iter().map(|e| e.body.clone()).collect();
     let same_look = drawn
         .as_ref()
         .is_some_and(|(b, m)| *b == bodies && *m == *materials);
 
     if same_look && !fresh {
         for (preview, mut transform) in &mut shapes {
-            if let Some(element) = level.elements.get(preview.0) {
+            if let Some(element) = shown.get(preview.0) {
                 let target = preview_transform(preview.0, element);
                 if *transform != target {
                     *transform = target;
@@ -242,7 +249,7 @@ fn sync_previews(
             }
         }
         for (label, mut transform, mut text) in &mut labels {
-            let Some(element) = level.elements.get(label.0) else {
+            let Some(element) = shown.get(label.0) else {
                 continue;
             };
             let position = label_position(element);
@@ -260,7 +267,7 @@ fn sync_previews(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    for (index, element) in level.elements.iter().enumerate() {
+    for (index, element) in shown.iter().enumerate() {
         let size = element.size();
         let color = preview_color(element, &materials);
         let transform = preview_transform(index, element);
@@ -360,7 +367,7 @@ fn edit_pointer(
                 .iter()
                 .enumerate()
                 .rev()
-                .filter(|(_, e)| e.contains(cursor))
+                .filter(|(_, e)| e.at_resolution(level.resolution).contains(cursor))
                 .min_by_key(|(_, e)| matches!(e.body, Body::Wall { .. }))
                 .map(|(i, _)| i);
             editor.selected = hit;
@@ -561,6 +568,16 @@ fn draw_grid(
     }
 }
 
+/// A pin as the editor shows it: a dot, and for a rope pin the rope up to where it hangs from.
+fn draw_pin(gizmos: &mut Gizmos, element: &Element, at: Vec2, color: Color) {
+    gizmos.circle_2d(at, 2.5, color);
+    if element.pins.style == PinStyle::Rope && element.control == Control::None {
+        let top = at + Vec2::Y * element.pins.rope;
+        gizmos.line_2d(at, top, color.with_alpha(0.6));
+        gizmos.circle_2d(top, 3.0, color);
+    }
+}
+
 fn draw_edit_gizmos(mut gizmos: Gizmos, level: Res<Level>, editor: Res<Editor>) {
     gizmos.rect_2d(
         Isometry2d::IDENTITY,
@@ -576,7 +593,7 @@ fn draw_edit_gizmos(mut gizmos: Gizmos, level: Res<Level>, editor: Res<Editor>) 
     for (index, element) in level.elements.iter().enumerate() {
         let selected = editor.selected == Some(index);
         let pose = element.pose();
-        let size = element.size();
+        let size = element.at_resolution(level.resolution).size();
         let outline = if selected {
             Color::srgb(1.0, 0.85, 0.2)
         } else {
@@ -600,12 +617,12 @@ fn draw_edit_gizmos(mut gizmos: Gizmos, level: Res<Level>, editor: Res<Editor>) 
             }
             for pin in &spec.pins {
                 let p = pose * (spec.cell_local(pin.col, pin.row) + pin.offset);
-                gizmos.circle_2d(p, 2.5, pin_color);
+                draw_pin(&mut gizmos, element, p, pin_color);
             }
         } else if matches!(element.body, Body::Ball { .. })
             && (element.pins.any() || element.control != Control::None)
         {
-            gizmos.circle_2d(element.pos, 2.5, pin_color);
+            draw_pin(&mut gizmos, element, element.pos, pin_color);
         }
 
         if element.velocity != Vec2::ZERO {

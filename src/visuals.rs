@@ -326,8 +326,14 @@ fn draw_bonds(
     view: Res<View>,
     materials: Res<Materials>,
     joints: Query<(&FixedJoint, &Bond)>,
+    hinges: Query<(&RevoluteJoint, &Bond)>,
+    ropes: Query<(&DistanceJoint, &Bond)>,
     bodies: Query<(&Position, &Rotation)>,
 ) {
+    let wear = |bond: &Bond| {
+        let s = bond.strength(&materials);
+        strain_color((bond.damage / s.ductility.max(1e-3)).max(bond.strain))
+    };
     for (joint, bond) in &joints {
         let pin = bond.material.is_none();
         if !pin && !view.stress_overlay {
@@ -342,9 +348,7 @@ fn draw_bonds(
                 continue;
             };
             let at = p1.0 + *r1 * local;
-            let s = bond.strength(&materials);
-            let wear = (bond.damage / s.ductility.max(1e-3)).max(bond.strain);
-            let color = strain_color(wear);
+            let color = wear(bond);
             gizmos.circle_2d(at, 3.0, color);
             if view.stress_overlay {
                 gizmos.line_2d(at, p2.0, color);
@@ -352,5 +356,35 @@ fn draw_bonds(
         } else {
             gizmos.line_2d(p1.0, p2.0, strain_color(bond.strain));
         }
+    }
+    // Hinges: an axle the body turns around.
+    for (joint, bond) in &hinges {
+        let Ok((p1, r1)) = bodies.get(joint.body1) else {
+            continue;
+        };
+        if let JointAnchor::Local(local) = joint.frame1.anchor {
+            let at = p1.0 + *r1 * local;
+            let color = wear(bond);
+            gizmos.circle_2d(at, 4.0, color);
+            gizmos.circle_2d(at, 1.5, color);
+        }
+    }
+    // Ropes: always drawn, they are part of the scene.
+    for (joint, bond) in &ropes {
+        let Ok([(p1, r1), (p2, r2)]) = bodies.get_many([joint.body1, joint.body2]) else {
+            continue;
+        };
+        let (JointAnchor::Local(a1), JointAnchor::Local(a2)) = (joint.anchor1, joint.anchor2)
+        else {
+            continue;
+        };
+        let (top, end) = (p1.0 + *r1 * a1, p2.0 + *r2 * a2);
+        let color = if view.stress_overlay {
+            wear(bond)
+        } else {
+            Color::srgb(0.75, 0.7, 0.6)
+        };
+        gizmos.line_2d(top, end, color);
+        gizmos.circle_2d(top, 3.0, color);
     }
 }

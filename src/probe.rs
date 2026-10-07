@@ -441,6 +441,98 @@ pub fn tnt() {
     );
 }
 
+/// Positions of an element's bodies, by element name (first match).
+fn element_bodies(world: &mut World, name: &str) -> Vec<Vec2> {
+    let roots: HashMap<Entity, String> = world
+        .query::<(Entity, &Name, &ElementRoot)>()
+        .iter(world)
+        .map(|(e, n, _)| (e, n.as_str().to_string()))
+        .collect();
+    world
+        .query::<(&Position, &Group)>()
+        .iter(world)
+        .filter(|(_, g)| roots.get(&g.0).is_some_and(|n| n == name))
+        .map(|(p, _)| p.0)
+        .collect()
+}
+
+fn centroid(points: &[Vec2]) -> Vec2 {
+    points.iter().sum::<Vec2>() / points.len().max(1) as f32
+}
+
+/// `--presets`: checks that the Wreck, Tower and Domino presets do what they promise.
+pub fn presets() {
+    // Wreck: a sideways shove makes the ball swing on its rope and hit the house.
+    let mut level = level::preset_wreck();
+    let ball = level
+        .elements
+        .iter_mut()
+        .find(|e| e.name == "Wrecking ball")
+        .unwrap();
+    ball.velocity = Vec2::new(-700.0, 0.0);
+    let mut app = make_app(level);
+    let mut xs = vec![];
+    for _ in 0..(5.0 * HZ) as usize {
+        app.update();
+        xs.push(centroid(&element_bodies(app.world_mut(), "Wrecking ball")).x);
+    }
+    let (min, max) = xs
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+    let score = app.world().resource::<Score>().points[0];
+    let broken = app.world().resource::<Stats>().broken;
+    println!(
+        "== Wreck: ball swung between x {min:.0} and {max:.0} (rest -180), {broken} bonds broken, score {score}"
+    );
+
+    // Tower: once its foundation is gone, the tower must fall, not hover on bolts to nothing.
+    let mut app = make_app(level::preset_tower());
+    step(&mut app, 0.5);
+    let start = centroid(&element_bodies(app.world_mut(), "Tower")).y;
+    let world = app.world_mut();
+    let foundation: Vec<Entity> = world
+        .query::<(Entity, &Name, &ElementRoot)>()
+        .iter(world)
+        .filter(|(_, n, _)| n.as_str() == "Foundation")
+        .map(|(e, _, _)| e)
+        .collect();
+    let doomed: Vec<Entity> = world
+        .query::<(Entity, &Group)>()
+        .iter(world)
+        .filter(|(_, g)| foundation.contains(&g.0))
+        .map(|(e, _)| e)
+        .collect();
+    for entity in doomed {
+        world.entity_mut(entity).insert(crate::lattice::Doomed);
+    }
+    step(&mut app, 3.0);
+    let end = centroid(&element_bodies(app.world_mut(), "Tower")).y;
+    println!("== Tower, foundation destroyed: centre y {start:.0} -> {end:.0}");
+    let mut app = make_app(level::preset_tower());
+    let start = centroid(&element_bodies(app.world_mut(), "Tower")).y;
+    step(&mut app, 3.0);
+    let end = centroid(&element_bodies(app.world_mut(), "Tower")).y;
+    println!("== Tower on its foundation: centre y {start:.0} -> {end:.0}");
+
+    // Domino: roll the ball into the first domino; falling over is what scores.
+    let mut level = level::preset_domino();
+    level.gun = false;
+    if let Some(ball) = level.elements.iter_mut().find(|e| e.name == "Ball") {
+        ball.velocity = Vec2::new(500.0, 0.0);
+        ball.owner = Some(crate::level::Player::One);
+    }
+    let mut app = make_app(level);
+    step(&mut app, 8.0);
+    let world = app.world_mut();
+    let fallen = world
+        .query::<(&ElementRoot, &Name)>()
+        .iter(world)
+        .filter(|(r, n)| r.destroyed && n.as_str().starts_with("Domino"))
+        .count();
+    let score = app.world().resource::<Score>().points[0];
+    println!("== Domino: {fallen} of 26 dominoes fell, score {score}");
+}
+
 /// Peak geometric strain and bend angle per element, for bonds and pins separately.
 fn peak_strains(world: &mut World, out: &mut HashMap<usize, [(f32, f32); 2]>) {
     let roots = root_indices(world);

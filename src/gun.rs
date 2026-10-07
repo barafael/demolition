@@ -1,10 +1,10 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use crate::lattice::{Doomed, Group, GroupRoot, LatticeSpec, doom_group, spawn_lattice};
+use crate::lattice::{Doomed, Group, GroupRoot, LatticeSpec, PinAnchor, doom_group, spawn_lattice};
 use crate::level::Player;
 use crate::materials::{MaterialKind, Materials};
-use crate::play::{HitTag, LevelEntity, ReportHits};
+use crate::play::{HitTag, LevelEntity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ammo {
@@ -228,6 +228,8 @@ pub fn fire(commands: &mut Commands, materials: &Materials, anchor: Entity, gun:
                 velocity,
                 round: true,
                 pins: vec![],
+                pin_style: Default::default(),
+                rope: 0.0,
                 ccd: true,
                 can_sleep: true,
                 bounce: None,
@@ -239,18 +241,15 @@ pub fn fire(commands: &mut Commands, materials: &Materials, anchor: Entity, gun:
                     Projectile,
                     LevelEntity,
                     gunner(),
-                    ReportHits,
                     Lifetime(PROJECTILE_LIFETIME),
                 ))
                 .id();
-            spawn_lattice(
-                commands,
-                materials,
-                anchor,
-                Isometry2d::IDENTITY,
-                &spec,
-                root,
-            );
+            // Projectiles have no pins; the world is the anchor if they ever did.
+            let world = PinAnchor {
+                entity: anchor,
+                pose: Isometry2d::IDENTITY,
+            };
+            spawn_lattice(commands, materials, &|_| world, &spec, root);
         }
     }
 }

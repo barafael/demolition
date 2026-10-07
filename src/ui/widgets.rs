@@ -12,7 +12,7 @@ use bevy::feathers::theme::ThemedText;
 use bevy::prelude::*;
 use bevy::ui_widgets::SliderPrecision;
 
-use super::bind::{Bind, ChoiceCaption, ChoiceItem, Field, ShowWhen, Shown};
+use super::bind::{Bind, ChoiceCaption, ChoiceItem, Field, ShowWhen, ShowWhenChoice, Shown};
 use super::{Act, Action, Chevron, Section, SectionBody};
 
 pub type Item = Box<dyn Scene>;
@@ -51,6 +51,19 @@ pub fn show_when(field: Field, items: Vec<Item>) -> Item {
             row_gap: px(6),
         }
         ShowWhen(field)
+        Children [ {items} ]
+    })
+}
+
+/// A vertical stack shown only while the choice `field` is set to option `option`.
+pub fn show_when_choice(field: Field, option: usize, items: Vec<Item>) -> Item {
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            row_gap: px(6),
+        }
+        ShowWhenChoice(field, option)
         Children [ {items} ]
     })
 }

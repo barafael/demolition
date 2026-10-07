@@ -1,16 +1,20 @@
-//! Grabbing: in play mode, right-drag picks up any free element - balls, crates, whole
-//! structures; left-drag too when the level has no gun to claim the button. While held, every
-//! body of the element is given the same velocity toward the cursor, which strains no internal
-//! bonds but does strain pins: a hard yank tears a structure loose. On release the element
-//! keeps its velocity, so a fast drag becomes a throw.
+//! Grabbing: in play mode, right-drag picks up any free piece - balls, crates, whole
+//! structures; left-drag too when the level has no gun to claim the button. What is held is
+//! the piece still bonded to the body under the cursor, not every fragment its element ever
+//! shed. While held, all of its bodies get the same velocity toward the cursor, which strains
+//! no internal bonds but does strain pins: a hard yank tears a structure loose. On release the
+//! piece keeps its velocity, so a fast drag becomes a throw.
+
+use std::collections::{HashMap, HashSet};
 
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
-use crate::lattice::{Doomed, Group};
+use crate::lattice::{Bond, Doomed, Group};
 use crate::level::Level;
-use crate::play::{CursorWorld, Driven, ElementRoot, Grab, Mode};
+use crate::level::Player;
+use crate::play::{CursorWorld, Driven, ElementRoot, Grab, HitTag, Mode};
 use crate::ui::{PointerOwner, world_pointer};
 use crate::visuals::aim_and_fire;
 
@@ -18,7 +22,7 @@ use crate::visuals::aim_and_fire;
 const SNAP: f32 = 20.0;
 /// Fastest speed a grab can impart; also the strongest possible throw.
 const GRAB_SPEED: f32 = 1400.0;
-/// Gold, like a staged move in a turn-based game: this one is held.
+/// Ring color of the held piece.
 const GRAB_COLOR: Color = Color::srgb(1.0, 0.82, 0.30);
 
 pub struct GrabPlugin;
@@ -55,15 +59,15 @@ fn grab_held(buttons: &ButtonInput<MouseButton>, level: &Level) -> bool {
     buttons.pressed(MouseButton::Right) || (!level.gun && buttons.pressed(MouseButton::Left))
 }
 
-/// The element root under the cursor whose bodies the mouse may move: dynamic, and not part
-/// of an element the player already drives (a paddle).
+/// The body under the cursor that the mouse may move, and its element: dynamic, and not
+/// part of an element the player already drives (a paddle).
 fn pick(
     cursor: Vec2,
     spatial: &SpatialQuery,
     groups: &Query<&Group>,
     candidates: &Query<(&Group, &RigidBody)>,
     driven: &Query<Entity, With<Driven>>,
-) -> Option<Entity> {
+) -> Option<(Entity, Entity)> {
     for hit in spatial.point_intersections(cursor, &SpatialQueryFilter::DEFAULT) {
         let Ok((group, body)) = candidates.get(hit) else {
             continue;
@@ -79,30 +83,54 @@ fn pick(
         {
             continue;
         }
-        return Some(root);
+        return Some((root, hit));
     }
     None
 }
 
-/// Centroid (unweighted) and bounding radius of an element's bodies.
-fn extent(
+/// The bodies still bonded to `start` (itself included): the piece the mouse actually holds.
+fn piece(
+    start: Entity,
     root: Entity,
-    members: &Query<(&Group, &Position), Without<Doomed>>,
-) -> Option<(Vec2, f32)> {
-    let mut sum = Vec2::ZERO;
-    let mut n = 0;
-    let mut radius: f32 = 0.0;
-    for (_, pos) in members.iter().filter(|(group, _)| group.0 == root) {
-        sum += pos.0;
-        n += 1;
+    bonds: &Query<(&FixedJoint, &Bond, &Group)>,
+) -> HashSet<Entity> {
+    let mut neighbours: HashMap<Entity, Vec<Entity>> = HashMap::new();
+    for (joint, bond, group) in bonds {
+        // Pins hold on to other things; only bonds within the element make up the piece.
+        if group.0 == root && bond.material.is_some() {
+            neighbours.entry(joint.body1).or_default().push(joint.body2);
+            neighbours.entry(joint.body2).or_default().push(joint.body1);
+        }
     }
-    if n == 0 {
+    let mut seen = HashSet::from([start]);
+    let mut todo = vec![start];
+    while let Some(body) = todo.pop() {
+        for &next in neighbours.get(&body).into_iter().flatten() {
+            if seen.insert(next) {
+                todo.push(next);
+            }
+        }
+    }
+    seen
+}
+
+/// Centroid (unweighted) and bounding radius of some bodies.
+fn extent(
+    bodies: &HashSet<Entity>,
+    positions: &Query<&Position, Without<Doomed>>,
+) -> Option<(Vec2, f32)> {
+    let points: Vec<Vec2> = bodies
+        .iter()
+        .filter_map(|&b| positions.get(b).ok().map(|p| p.0))
+        .collect();
+    if points.is_empty() {
         return None;
     }
-    let center = sum / n as f32;
-    for (_, pos) in members.iter().filter(|(group, _)| group.0 == root) {
-        radius = radius.max(pos.0.distance(center));
-    }
+    let center = points.iter().sum::<Vec2>() / points.len() as f32;
+    let radius = points
+        .iter()
+        .map(|p| p.distance(center))
+        .fold(0.0, f32::max);
     Some((center, radius))
 }
 
@@ -114,12 +142,14 @@ fn grab_pointer(
     groups: Query<&Group>,
     candidates: Query<(&Group, &RigidBody)>,
     driven: Query<Entity, With<Driven>>,
-    members: Query<(&Group, &Position), Without<Doomed>>,
+    bonds: Query<(&FixedJoint, &Bond, &Group)>,
+    positions: Query<&Position, Without<Doomed>>,
+    mut tags: Query<&mut HitTag>,
     mut grab: ResMut<Grab>,
 ) {
-    if grab.root.is_some() {
+    if grab.body.is_some() {
         if !grab_held(&buttons, &level) {
-            grab.root = None;
+            grab.release();
         }
         return;
     }
@@ -127,62 +157,62 @@ fn grab_pointer(
         || (buttons.just_pressed(MouseButton::Left) && !level.gun);
     if press
         && let Some(cursor) = cursor.0
-        && let Some(root) = pick(cursor, &spatial, &groups, &candidates, &driven)
-        && let Some((center, _)) = extent(root, &members)
+        && let Some((root, body)) = pick(cursor, &spatial, &groups, &candidates, &driven)
+        && let Some((center, _)) = extent(&piece(body, root, &bonds), &positions)
     {
         grab.root = Some(root);
-        // Keep the pick point, so the element doesn't snap its center onto the cursor.
+        grab.body = Some(body);
+        // What the player throws or swings counts as their hit (the mouse is player one's).
+        if let Ok(mut tag) = tags.get_mut(root)
+            && tag.owner.is_none()
+        {
+            tag.last_hit = Some(Player::One);
+        }
+        // Keep the pick point, so the piece doesn't snap its center onto the cursor.
         grab.offset = center - cursor;
     }
 }
 
-/// Steers the held element: every body gets the same velocity toward the grab point, which
-/// strains no internal bonds but lets the element pull against its pins.
+/// Steers the held piece: every body gets the same velocity toward the grab point, which
+/// strains no internal bonds but lets the piece pull against its pins.
 fn drag_grab(
     mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
     cursor: Res<CursorWorld>,
     level: Res<Level>,
     roots: Query<&ElementRoot>,
-    mut members: Query<
-        (
-            Entity,
-            &Group,
-            &Position,
-            &mut LinearVelocity,
-            Has<Sleeping>,
-        ),
-        (With<RigidBody>, Without<Doomed>),
-    >,
+    bonds: Query<(&FixedJoint, &Bond, &Group)>,
+    positions: Query<&Position, Without<Doomed>>,
+    mut velocities: Query<(&mut LinearVelocity, Has<Sleeping>), (With<RigidBody>, Without<Doomed>)>,
     mut grab: ResMut<Grab>,
 ) {
-    let Some(root) = grab.root else { return };
+    let (Some(root), Some(body)) = (grab.root, grab.body) else {
+        return;
+    };
     if !grab_held(&buttons, &level)
-        // The element fell apart (scored) or despawned (restart, debris expiry).
+        // The element was scored as destroyed, or the grabbed body is gone (restart, debris
+        // expiry).
         || roots.get(root).is_ok_and(|root| root.destroyed)
+        || !positions.contains(body)
     {
-        grab.root = None;
+        grab.release();
         return;
     }
-    let held: Vec<_> = members
-        .iter_mut()
-        .filter(|(_, group, ..)| group.0 == root)
-        .collect();
-    if held.is_empty() {
-        grab.root = None;
+    let held = piece(body, root, &bonds);
+    let (Some(cursor), Some((centroid, _))) = (cursor.0, extent(&held, &positions)) else {
         return;
-    }
-    let Some(cursor) = cursor.0 else { return };
-    let centroid = held.iter().map(|(_, _, pos, _, _)| pos.0).sum::<Vec2>() / held.len() as f32;
+    };
     // Keep the grab inside the level, so nothing is dragged out of reach of the cull.
     let lim = (level.bounds - Vec2::splat(40.0)).max(Vec2::splat(40.0));
     let target = (cursor + grab.offset).clamp(-lim, lim);
     let velocity = ((target - centroid) * SNAP).clamp_length_max(GRAB_SPEED);
-    for (entity, _, _, mut vel, asleep) in held {
-        if asleep {
-            commands.queue(WakeBody(entity));
+    for &entity in &held {
+        if let Ok((mut vel, asleep)) = velocities.get_mut(entity) {
+            if asleep {
+                commands.queue(WakeBody(entity));
+            }
+            vel.0 = velocity;
         }
-        vel.0 = velocity;
     }
 }
 
@@ -195,22 +225,27 @@ fn show_grab(
     groups: Query<&Group>,
     candidates: Query<(&Group, &RigidBody)>,
     driven: Query<Entity, With<Driven>>,
-    members: Query<(&Group, &Position), Without<Doomed>>,
+    bonds: Query<(&FixedJoint, &Bond, &Group)>,
+    positions: Query<&Position, Without<Doomed>>,
 ) {
-    let hover = cursor
-        .0
-        .and_then(|cursor| pick(cursor, &spatial, &groups, &candidates, &driven));
-    if let Some(root) = grab.root.or(hover)
-        && let Some((center, radius)) = extent(root, &members)
+    let held = grab.root.zip(grab.body);
+    let target = held.or_else(|| {
+        cursor
+            .0
+            .and_then(|cursor| pick(cursor, &spatial, &groups, &candidates, &driven))
+    });
+    if let Some((root, body)) = target
+        && let Some((center, radius)) = extent(&piece(body, root, &bonds), &positions)
     {
-        let held = grab.root == Some(root);
-        let color = if held {
+        let color = if held.is_some() {
             GRAB_COLOR
         } else {
             Color::srgba(1.0, 1.0, 1.0, 0.45)
         };
         gizmos.circle_2d(center, radius + 8.0, color);
-        if held && let Some(cursor) = cursor.0 {
+        if held.is_some()
+            && let Some(cursor) = cursor.0
+        {
             gizmos.line_2d(cursor, center, GRAB_COLOR.with_alpha(0.35));
         }
     }
@@ -236,7 +271,7 @@ fn grab_cursor(
         && cursor
             .0
             .is_some_and(|cursor| pick(cursor, &spatial, &groups, &candidates, &driven).is_some());
-    let icon = if grab.root.is_some() {
+    let icon = if grab.body.is_some() {
         CursorIcon::System(SystemCursorIcon::Grabbing)
     } else if hover {
         CursorIcon::System(SystemCursorIcon::Grab)

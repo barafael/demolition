@@ -133,6 +133,9 @@ fn main() {
     if arg("--probe") {
         return probe::run();
     }
+    if arg("--presets") {
+        return probe::presets();
+    }
     if arg("--tnt") {
         return probe::tnt();
     }
