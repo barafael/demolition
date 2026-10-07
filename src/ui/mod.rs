@@ -196,6 +196,8 @@ pub enum Dyn {
     Score,
     Highscore,
     ToolbarToggle,
+    /// What the physics resolution costs: cells and substeps.
+    PhysicsCost,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -464,7 +466,24 @@ fn update_texts(
     bodies: Query<(), With<RigidBody>>,
     mut fps: Local<f32>,
     mut since_stats: Local<f32>,
+    mut cells: Local<Option<usize>>,
 ) {
+    if level.is_changed() || cells.is_none() {
+        // Cells all lattices will have at this resolution (counted only when the level changes).
+        *cells = Some(
+            level
+                .elements
+                .iter()
+                .filter_map(|e| crate::play::lattice_spec(e, level.resolution))
+                .map(|spec| {
+                    (0..spec.cols)
+                        .flat_map(|i| (0..spec.rows).map(move |j| (i, j)))
+                        .filter(|&(i, j)| spec.has_cell(i, j))
+                        .count()
+                })
+                .sum(),
+        );
+    }
     let dt = real.delta_secs().max(1e-6);
     *fps = if *fps == 0.0 {
         1.0 / dt
@@ -509,6 +528,11 @@ fn update_texts(
                 highscores.0.get(&level.name).copied().unwrap_or(0)
             ),
             Dyn::ToolbarToggle => if toolbar.0 { "»" } else { "«" }.into(),
+            Dyn::PhysicsCost => format!(
+                "about {} cells, {} substeps",
+                cells.unwrap_or(0),
+                level.effective_substeps()
+            ),
         };
         if text.0 != value {
             text.0 = value;

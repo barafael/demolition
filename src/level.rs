@@ -369,6 +369,19 @@ pub struct Level {
     pub materials: Materials,
 }
 
+impl Level {
+    /// Substeps actually simulated: the level's substeps, scaled up with its physics
+    /// resolution. A finer lattice has proportionally longer chains of joints, and the solver
+    /// needs proportionally more substeps for them to hold together as well as at resolution 1.
+    /// Coarser lattices keep the full count: with fewer substeps, brittle beams broke under
+    /// their own weight at resolution 0.5.
+    pub fn effective_substeps(&self) -> u32 {
+        (self.substeps as f32 * self.resolution.clamp(1.0, 10.0))
+            .round()
+            .clamp(1.0, 256.0) as u32
+    }
+}
+
 impl Default for Level {
     fn default() -> Self {
         Self {

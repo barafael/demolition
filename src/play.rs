@@ -255,7 +255,7 @@ fn apply_world_settings(
     if gravity.0 != g {
         gravity.0 = g;
     }
-    let n = level.substeps.max(1);
+    let n = level.effective_substeps();
     if substeps.0 != n {
         substeps.0 = n;
     }
@@ -276,7 +276,7 @@ fn enter_play(
     mut respawns: ResMut<Respawns>,
 ) {
     gravity.0 = Vec2::NEG_Y * level.gravity;
-    substeps.0 = level.substeps.max(1);
+    substeps.0 = level.effective_substeps();
     applied.0 = level.resolution;
     gun.pos = level.gun_pos;
     *score = Score::default();

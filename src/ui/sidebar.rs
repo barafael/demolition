@@ -82,7 +82,7 @@ fn world_section() -> Item {
                 SavedLevels
             }),
             slider("Gravity", Field::Gravity, -3000.0, 3000.0, 0),
-            slider("Substeps", Field::Substeps, 1.0, 60.0, 0),
+            slider("Substeps (× resolution)", Field::Substeps, 1.0, 60.0, 0),
             slider(
                 "Physics resolution (cells per cell)",
                 Field::Resolution,
@@ -91,7 +91,10 @@ fn world_section() -> Item {
                 2,
             ),
             caption(
-                "Finer cells break and show stress more locally; 2 = four times the cells. Applied on release, so the world rebuilds.",
+                "Finer cells break and show stress more locally; 2 = four times the cells. Substeps scale with it so structures hold together as well as at 1, so 2 costs about 8× as much. Applied on release, so the world rebuilds.",
+            ),
+            Box::new(
+                bsn! { Text("") ThemedText Dyn::PhysicsCost TextFont { font_size: FontSize::Px(12.0) } },
             ),
             number("View width", Field::ViewWidth),
             number("View height", Field::ViewHeight),
