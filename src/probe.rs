@@ -6,6 +6,9 @@
 //! - `--pong`: just the unattended Pong run.
 //! - `--rest`: resting speeds per structure (what keeps them from sleeping).
 //! - `--bench`: cost of a physics step, by phase.
+//!
+//! `--resolution X` and `--substeps N` override every probed level's physics resolution and
+//! substep count, for trying finer cells or cheaper steps across the whole suite.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -24,8 +27,7 @@ use crate::gun::{Ammo, Gun, aim_at, fire};
 use crate::lattice::{Bond, Cell, Group, WorldAnchor};
 use crate::level::{self, Body, Level};
 use crate::materials::{MaterialKind, Materials};
-use crate::play::Driven;
-use crate::play::{ElementRoot, Mode, Score};
+use crate::play::{Driven, ElementRoot, Mode, Score};
 
 const HZ: f64 = 64.0;
 

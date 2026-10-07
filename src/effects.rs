@@ -4,7 +4,7 @@
 use avian2d::prelude::Gravity;
 use bevy::prelude::*;
 
-use crate::fracture::Breaks;
+use crate::fracture::{Break, Breaks};
 use crate::play::{Explosions, Mode};
 use crate::visuals::{View, WorldCamera};
 
@@ -15,12 +15,14 @@ impl Plugin for EffectsPlugin {
         app.init_resource::<Shake>()
             .init_resource::<SlowMotion>()
             .init_resource::<Flashes>()
+            .init_resource::<BreakFlashes>()
             .add_systems(
                 Update,
                 (
                     react_to_breaks,
                     move_particles,
                     draw_flashes,
+                    draw_breaks,
                     end_slow_motion,
                 )
                     .chain(),
@@ -54,6 +56,10 @@ struct SlowMotion {
 /// Expanding rings where explosions went off: (position, radius, real start time).
 #[derive(Resource, Default)]
 struct Flashes(Vec<(Vec2, f32, f32)>);
+
+/// Breaks still within their flash window, for the gizmo overlay.
+#[derive(Resource, Default)]
+struct BreakFlashes(Vec<Break>);
 
 const MAX_PARTICLES: usize = 1500;
 /// Breaks in one frame that count as a big event.
@@ -103,7 +109,7 @@ fn spawn_particle(
 
 fn react_to_breaks(
     mut commands: Commands,
-    breaks: Res<Breaks>,
+    mut breaks: ResMut<Breaks>,
     explosions: Res<Explosions>,
     particles: Query<(), With<Particle>>,
     view: Res<View>,
@@ -113,21 +119,14 @@ fn react_to_breaks(
     mut shake: ResMut<Shake>,
     mut slow: ResMut<SlowMotion>,
     mut flashes: ResMut<Flashes>,
-    mut last_seen: Local<f32>,
+    mut break_flashes: ResMut<BreakFlashes>,
     mut seed: Local<u32>,
 ) {
     let mut rng = Rng(seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453) | 1);
-    let now = time.elapsed_secs();
-    let fresh: Vec<_> = breaks
-        .0
-        .iter()
-        .filter(|b| b.time > *last_seen)
-        .copied()
-        .collect();
-    if let Some(latest) = breaks.0.iter().map(|b| b.time).reduce(f32::max) {
-        *last_seen = last_seen.max(latest);
-    }
-    *last_seen = last_seen.min(now);
+    // Take the whole queue: every break gets its effects exactly once, even when several
+    // physics ticks shared one frame (and so one virtual timestamp).
+    let fresh = std::mem::take(&mut breaks.0);
+    break_flashes.0.extend(fresh.iter().copied());
 
     let mut budget = MAX_PARTICLES.saturating_sub(particles.iter().count());
     for b in &fresh {
@@ -222,6 +221,17 @@ fn draw_flashes(mut gizmos: Gizmos, mut flashes: ResMut<Flashes>, real: Res<Time
         let color = Color::srgba(1.0, 0.8, 0.4, 1.0 - t);
         gizmos.circle_2d(*pos, radius * (0.3 + 0.7 * t), color);
         gizmos.circle_2d(*pos, radius * 0.6 * t, color.with_alpha((1.0 - t) * 0.5));
+    }
+}
+
+/// Expanding rings where bonds snapped, in the broken material's color.
+fn draw_breaks(mut gizmos: Gizmos, mut breaks: ResMut<BreakFlashes>, time: Res<Time<Virtual>>) {
+    const FLASH: f32 = 0.35;
+    let now = time.elapsed_secs();
+    breaks.0.retain(|b| now - b.time < FLASH);
+    for b in &breaks.0 {
+        let age = (now - b.time) / FLASH;
+        gizmos.circle_2d(b.pos, 2.0 + 10.0 * age, b.color.with_alpha(1.0 - age));
     }
 }
 

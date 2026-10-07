@@ -6,7 +6,6 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 
-use crate::fracture::Breaks;
 use crate::gun::{Ammo, Gun, MUZZLE, Round, fire};
 use crate::lattice::{Bond, Cell, WorldAnchor};
 use crate::level::Level;
@@ -57,7 +56,6 @@ impl Plugin for VisualsPlugin {
                     attach_round_meshes,
                     tint_cells,
                     draw_bonds,
-                    draw_breaks,
                 ),
             );
     }
@@ -354,19 +352,5 @@ fn draw_bonds(
         } else {
             gizmos.line_2d(p1.0, p2.0, strain_color(bond.strain));
         }
-    }
-}
-
-fn draw_breaks(mut gizmos: Gizmos, mut breaks: ResMut<Breaks>, time: Res<Time<Virtual>>) {
-    const FLASH: f32 = 0.35;
-    let now = time.elapsed_secs();
-    breaks.0.retain(|b| now - b.time < FLASH);
-    for b in &breaks.0 {
-        let age = (now - b.time) / FLASH;
-        gizmos.circle_2d(
-            b.pos,
-            2.0 + 10.0 * age,
-            Color::srgba(1.0, 0.85, 0.3, 1.0 - age),
-        );
     }
 }

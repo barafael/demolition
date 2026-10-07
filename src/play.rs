@@ -135,6 +135,11 @@ pub struct CursorWorld(pub Option<Vec2>);
 #[derive(Resource, Default)]
 pub struct Restart(pub bool);
 
+/// The resolution the world was last spawned at; a change asks for a `Restart` once the
+/// resolution slider is released (see `apply_world_settings`).
+#[derive(Resource, Default)]
+pub struct AppliedResolution(pub f32);
+
 /// The element the mouse is holding in play mode (see `grab.rs`). Keep-speed leaves a held
 /// element alone, so a grabbed Pong ball doesn't pull away from the cursor.
 #[derive(Resource, Default)]
@@ -184,6 +189,7 @@ impl Plugin for PlayPlugin {
             .init_resource::<Score>()
             .init_resource::<CursorWorld>()
             .init_resource::<Restart>()
+            .init_resource::<AppliedResolution>()
             .init_resource::<Grab>()
             .init_resource::<Respawns>()
             .init_resource::<ClearDebris>()
@@ -226,12 +232,22 @@ fn sync_level_materials(level: Res<Level>, mut materials: ResMut<Materials>) {
 }
 
 /// Gravity and substeps follow the level while playing, so World settings apply live. Only
-/// written when they differ: changing gravity wakes every sleeping body.
+/// written when they differ: changing gravity wakes every sleeping body. Resolution can only
+/// change how elements are spawned, so a change (once the slider is released) restarts instead.
 fn apply_world_settings(
     level: Res<Level>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut applied: ResMut<AppliedResolution>,
+    mut restart: ResMut<Restart>,
     mut gravity: ResMut<Gravity>,
     mut substeps: ResMut<SubstepCount>,
 ) {
+    let released =
+        !buttons.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle]);
+    if released && applied.0 != level.resolution {
+        applied.0 = level.resolution;
+        restart.0 = true;
+    }
     if !level.is_changed() {
         return;
     }
@@ -253,6 +269,7 @@ fn enter_play(
     mut gravity: ResMut<Gravity>,
     mut substeps: ResMut<SubstepCount>,
     mut gun: ResMut<Gun>,
+    mut applied: ResMut<AppliedResolution>,
     mut score: ResMut<Score>,
     mut stats: ResMut<Stats>,
     mut breaks: ResMut<Breaks>,
@@ -260,6 +277,7 @@ fn enter_play(
 ) {
     gravity.0 = Vec2::NEG_Y * level.gravity;
     substeps.0 = level.substeps.max(1);
+    applied.0 = level.resolution;
     gun.pos = level.gun_pos;
     *score = Score::default();
     *stats = Stats::default();
@@ -303,6 +321,7 @@ fn restart(
     materials: Res<Materials>,
     anchor: Res<WorldAnchor>,
     mut score: ResMut<Score>,
+    mut applied: ResMut<AppliedResolution>,
     mut respawns: ResMut<Respawns>,
 ) {
     if !std::mem::take(&mut request.0) {
@@ -311,6 +330,7 @@ fn restart(
     clear_level(commands.reborrow(), spawned);
     *score = Score::default();
     respawns.0.clear();
+    applied.0 = level.resolution;
     for (index, element) in level.elements.iter().enumerate() {
         spawn_element(
             &mut commands,

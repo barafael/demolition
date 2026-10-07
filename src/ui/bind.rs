@@ -26,6 +26,7 @@ pub enum Field {
     LevelName,
     Gravity,
     Substeps,
+    Resolution,
     ViewWidth,
     ViewHeight,
     BoundsWidth,
@@ -308,7 +309,8 @@ fn element_set(e: &mut Element, f: ElementField, v: Value) {
         E::PinTop => e.pins.top = flag,
         E::PinBottom => e.pins.bottom = flag,
         E::PinCenter => e.pins.center = flag,
-        E::PinEvery => e.pins.every = num.round().clamp(1.0, 100.0) as u32,
+        // The wrecking ball hangs from one bolt via `every: 999_999`, so the clamp must allow it.
+        E::PinEvery => e.pins.every = num.round().clamp(1.0, 999_999.0) as u32,
         E::Control => e.control = Control::ALL.get(choice).copied().unwrap_or_default(),
         E::Axis => e.axis = Axis::ALL.get(choice).copied().unwrap_or_default(),
         E::Speed => e.speed = num,
@@ -359,6 +361,7 @@ impl Model<'_> {
             Field::LevelName => S(level.name.clone()),
             Field::Gravity => F(level.gravity),
             Field::Substeps => F(level.substeps as f32),
+            Field::Resolution => F(level.resolution),
             Field::ViewWidth => F(level.view.x),
             Field::ViewHeight => F(level.view.y),
             Field::BoundsWidth => F(level.bounds.x),
@@ -409,6 +412,7 @@ impl Model<'_> {
             }
             Field::Gravity => self.level.gravity = num,
             Field::Substeps => self.level.substeps = num.round().clamp(1.0, 100.0) as u32,
+            Field::Resolution => self.level.resolution = num.clamp(0.1, 10.0),
             Field::ViewWidth => self.level.view.x = num.max(100.0),
             Field::ViewHeight => self.level.view.y = num.max(100.0),
             Field::BoundsWidth => self.level.bounds.x = num.max(100.0),

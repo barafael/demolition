@@ -156,4 +156,10 @@ pub fn plasticity(
         let base = cell.stress_base;
         cell.stress_base = base + (cell.stress - base) * STRESS_BASE_RATE;
     }
+
+    // The effects take the whole queue every frame; headless runs have no taker, so keep the
+    // log bounded there.
+    if breaks.0.len() > 8192 {
+        breaks.0.drain(..4096);
+    }
 }

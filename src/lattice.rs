@@ -313,14 +313,19 @@ pub fn doom_group(commands: &mut Commands, root: Entity, members: &Query<(Entity
     }
 }
 
-/// Keeps joint compliance in sync with the live-edited material table.
+/// Keeps joint compliance in sync with the live-edited material table. Only joints that
+/// actually differ are written, so the solver doesn't re-prepare every joint per slider frame.
 pub fn sync_compliance(materials: Res<Materials>, mut joints: Query<(&mut FixedJoint, &Bond)>) {
     if !materials.is_changed() {
         return;
     }
     for (mut joint, bond) in &mut joints {
         let s = bond.strength(&materials);
-        joint.point_compliance = s.point_compliance;
-        joint.angle_compliance = s.angle_compliance;
+        if joint.point_compliance != s.point_compliance
+            || joint.angle_compliance != s.angle_compliance
+        {
+            joint.point_compliance = s.point_compliance;
+            joint.angle_compliance = s.angle_compliance;
+        }
     }
 }

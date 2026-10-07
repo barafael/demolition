@@ -83,6 +83,16 @@ fn world_section() -> Item {
             }),
             slider("Gravity", Field::Gravity, -3000.0, 3000.0, 0),
             slider("Substeps", Field::Substeps, 1.0, 60.0, 0),
+            slider(
+                "Physics resolution (cells per cell)",
+                Field::Resolution,
+                0.25,
+                4.0,
+                2,
+            ),
+            caption(
+                "Finer cells break and show stress more locally; 2 = four times the cells. Applied on release, so the world rebuilds.",
+            ),
             number("View width", Field::ViewWidth),
             number("View height", Field::ViewHeight),
             number("Bounds ± x", Field::BoundsWidth),
